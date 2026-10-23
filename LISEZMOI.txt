@@ -1,0 +1,20 @@
+Mes recettes : version installable et hors ligne
+================================================
+
+Mettre en ligne (une seule fois, gratuit)
+1. Crée un compte gratuit sur github.com.
+2. Crée un nouveau dépôt (bouton « New »), par exemple « recettes », en Public.
+3. Dans le dépôt : « Add file » > « Upload files », glisse tous les fichiers de ce dossier
+   (index.html, sw.js, manifest.webmanifest et les icônes), puis « Commit changes ».
+4. Settings > Pages > Source : « Deploy from a branch », branche « main », dossier « / (root) » > Save.
+5. Après une minute, l'adresse s'affiche : https://TON-PSEUDO.github.io/recettes/
+
+Installer sur le téléphone
+- iPhone (Safari) : ouvre l'adresse > bouton Partager > « Sur l'écran d'accueil ».
+- Android (Chrome) : ouvre l'adresse > menu ⋮ > « Installer l'application ».
+Ensuite l'appli fonctionne sans connexion.
+
+Bon à savoir
+- Tes recettes sont stockées dans le téléphone, pas sur GitHub. Le dépôt ne contient que le code.
+- Pense à exporter tes recettes de temps en temps (bouton ⋯ > Exporter) : c'est ta sauvegarde.
+- Pour publier une mise à jour du code : remplace les fichiers sur GitHub et change VERSION dans sw.js.
