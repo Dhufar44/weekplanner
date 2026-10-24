@@ -94,6 +94,8 @@ nav.tabs .badge:empty{display:none}
 .row-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.8rem;color:var(--muted)}
 .dots{display:inline-flex;gap:3px;align-items:center}
 .pill{border-radius:6px;background:var(--sunk);padding:1px 7px;font-weight:500}
+.pill-vege{color:var(--spr);font-weight:600}
+.pill-carne{color:var(--aut);font-weight:600}
 .row-last{font-size:.8rem;color:var(--muted);text-align:right;white-space:nowrap}
 .row-last.old{color:var(--accent);font-weight:600}
 .pick{flex:none;width:44px;height:44px;border-radius:50%;border:2px solid var(--line);background:var(--surface);font-size:1.15rem;font-weight:700;color:var(--muted);display:grid;place-items:center}
@@ -201,6 +203,10 @@ const SEASONS = [
   { k: 'automne', l: 'Automne' }, { k: 'hiver', l: 'Hiver' }
 ];
 const MOMENTS = [{ k: 'midi', l: 'Midi' }, { k: 'soir', l: 'Soir' }];
+const REGIMES = [{ k: 'vege', l: 'Végé' }, { k: 'carne', l: 'Carné' }];
+/* Régime d’une recette ; les anciennes recettes « avec/sans protéines » sont lues comme carné/végé. */
+const regimeOf = r => r.regime === 'vege' || r.regime === 'carne' ? r.regime : r.protein === true ? 'carne' : r.protein === false ? 'vege' : null;
+const regimeLabel = k => (REGIMES.find(x => x.k === k) || {}).l || '';
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const seasonOf = d => { const m = d.getMonth(); return m >= 2 && m <= 4 ? 'printemps' : m >= 5 && m <= 7 ? 'ete' : m >= 8 && m <= 10 ? 'automne' : 'hiver'; };
 const todayIso = () => iso(new Date());
@@ -211,7 +217,7 @@ const thisWeekKey = () => iso(mondayOf(new Date()));
 const S = {
   tab: 'recettes', mode: 'loading', db: null, uid: null, downloads: null,
   recipes: new Map(), weeks: {}, weekKey: thisWeekKey(), unsubWeek: null,
-  filters: { q: '', seasons: new Set([seasonOf(new Date())]), moments: new Set(), protein: null, onlyPicked: false, sort: 'oubli' }
+  filters: { q: '', seasons: new Set([seasonOf(new Date())]), moments: new Set(), regime: null, onlyPicked: false, sort: 'oubli' }
 };
 const LKEY = 'mes-recettes:v1';
 const standalone = !(window.claude && window.claude.use);
@@ -342,7 +348,7 @@ function filterRecipes(f) {
     if (f.onlyPicked && !picks.includes(r.id)) return false;
     if (f.seasons.size && r.seasons && r.seasons.length && !r.seasons.some(s => f.seasons.has(s))) return false;
     if (f.moments.size && r.moments && r.moments.length && !r.moments.some(m => f.moments.has(m))) return false;
-    if (f.protein !== null && !!r.protein !== f.protein) return false;
+    if (f.regime && regimeOf(r) !== f.regime) return false;
     if (words.length) {
       const hay = norm([r.name, r.ingredients, (r.tags || []).join(' '), r.notes].join(' '));
       if (!words.every(w => hay.includes(w))) return false;
@@ -362,7 +368,8 @@ function metaHtml(r) {
     parts.push(`<span class="dots">${r.seasons.map(s => `<span class="dot d-${s}" title="${esc(SEASONS.find(x => x.k === s)?.l)}"></span>`).join('')}<span class="sr">${r.seasons.map(s => SEASONS.find(x => x.k === s)?.l).join(', ')}</span></span>`);
   } else parts.push('<span>Toute l’année</span>');
   if (r.moments && r.moments.length === 1) parts.push(`<span class="pill">${r.moments[0] === 'midi' ? 'Midi' : 'Soir'}</span>`);
-  if (r.protein) parts.push('<span class="pill">Protéines</span>');
+  const rg = regimeOf(r);
+  if (rg) parts.push(`<span class="pill pill-${rg}">${regimeLabel(rg)}</span>`);
   (r.tags || []).slice(0, 3).forEach(t => parts.push(`<span class="pill">${esc(t)}</span>`));
   return parts.join('');
 }
@@ -388,8 +395,7 @@ function filtersHtml(f) {
     <span class="sep" aria-hidden="true"></span>
     ${MOMENTS.map(m => chip('moment:' + m.k, m.l, f.moments.has(m.k))).join('')}
     <span class="sep" aria-hidden="true"></span>
-    ${chip('protein:true', 'Avec protéines', f.protein === true)}
-    ${chip('protein:false', 'Sans protéines', f.protein === false)}
+    ${REGIMES.map(g => chip('regime:' + g.k, g.l, f.regime === g.k)).join('')}
   </div>
   <div class="listhead"><span id="rcount"></span><label><span class="sr">Trier</span><select data-sort>
     <option value="oubli"${f.sort === 'oubli' ? ' selected' : ''}>Pas faites depuis longtemps</option>
@@ -528,12 +534,13 @@ function renderPool() {
   }
   const done = recs.filter(r => w.done[r.id]);
   const todo = recs.filter(r => !w.done[r.id]);
-  const prot = recs.filter(r => r.protein).length;
+  const nVege = recs.filter(r => regimeOf(r) === 'vege').length;
+  const nCarne = recs.filter(r => regimeOf(r) === 'carne').length;
   const midi = recs.filter(r => r.moments && r.moments.length === 1 && r.moments[0] === 'midi').length;
   const soir = recs.filter(r => r.moments && r.moments.length === 1 && r.moments[0] === 'soir').length;
   el.innerHTML = `<div class="summary">
       <span class="pill">${plural(recs.length, 'recette')}</span>
-      <span class="pill">${prot} avec protéines</span><span class="pill">${recs.length - prot} sans</span>
+      ${nVege ? `<span class="pill pill-vege">${nVege} végé</span>` : ''}${nCarne ? `<span class="pill pill-carne">${nCarne} carné${nCarne > 1 ? 's' : ''}</span>` : ''}
       ${midi ? `<span class="pill">${midi} plutôt midi</span>` : ''}${soir ? `<span class="pill">${soir} plutôt soir</span>` : ''}
       ${done.length ? `<span class="pill">${done.length} déjà faite${done.length > 1 ? 's' : ''}</span>` : ''}</div>
     <div class="list">${todo.map(r => poolRow(r, false)).join('')}${done.map(r => poolRow(r, true)).join('')}</div>
@@ -593,7 +600,8 @@ function openRecipe(id) {
 }
 function openEditor(id) {
   sheetRecipe = null;
-  const r = id ? S.recipes.get(id) : { seasons: [], moments: [], protein: false };
+  const r = id ? S.recipes.get(id) : { seasons: [], moments: [] };
+  const rg = regimeOf(r);
   const t = (k, l, on, name) => `<button type="button" class="chip" data-toggle="${name}" data-v="${k}" aria-pressed="${on}">${name === 'seasons' ? `<span class="dot d-${k}"></span>` : ''}${l}</button>`;
   openSheet(`${head(id ? 'Modifier la recette' : 'Nouvelle recette')}
   <form class="sheet-body" id="editForm" autocomplete="off">
@@ -602,9 +610,9 @@ function openEditor(id) {
       <span class="hint">Aucune saison cochée = toute l’année.</span></fieldset>
     <fieldset class="field"><legend>Plutôt pour</legend><div class="filters" style="margin:0">${MOMENTS.map(m => t(m.k, m.l, (r.moments || []).includes(m.k), 'moments')).join('')}</div>
       <span class="hint">Aucun coché = midi comme soir.</span></fieldset>
-    <fieldset class="field"><legend>Protéines (viande, poisson, œufs, légumineuses…)</legend><div class="filters" style="margin:0">
-      <button type="button" class="chip" data-toggle="protein" data-v="1" aria-pressed="${!!r.protein}">Avec protéines</button>
-      <button type="button" class="chip" data-toggle="protein" data-v="0" aria-pressed="${!r.protein}">Sans protéines</button></div></fieldset>
+    <fieldset class="field"><legend>Régime</legend><div class="filters" style="margin:0">
+      ${REGIMES.map(g => `<button type="button" class="chip" data-toggle="regime" data-v="${g.k}" aria-pressed="${rg === g.k}">${g.l}</button>`).join('')}</div>
+      <span class="hint">Carné = avec viande ou poisson.</span></fieldset>
     <label class="field"><span>Ingrédients</span><textarea name="ingredients" placeholder="Un ingrédient par ligne :&#10;400 g de pois chiches&#10;2 oignons&#10;1 c. à soupe de curry">${esc(r.ingredients || '')}</textarea>
       <span class="hint">Une ligne par ingrédient, quantité en premier. Les quantités s’additionnent dans la liste de courses.</span></label>
     <label class="field"><span>Préparation ou notes</span><textarea name="notes" placeholder="Étapes, astuces, lien vers la recette d’origine…">${esc(r.notes || '')}</textarea></label>
@@ -627,7 +635,10 @@ function submitEditor(id) {
   r.name = name;
   r.seasons = picked('seasons');
   r.moments = picked('moments');
-  r.protein = picked('protein')[0] === '1';
+  const regime = picked('regime')[0];
+  if (!regime) { toast('Indique si la recette est végé ou carnée'); form.querySelector('[data-toggle="regime"]').focus(); return; }
+  r.regime = regime;
+  delete r.protein;
   r.ingredients = F('ingredients').value.trim();
   r.notes = F('notes').value.trim();
   r.tags = F('tags').value.split(',').map(s => s.trim()).filter(Boolean);
@@ -684,13 +695,13 @@ async function doImport(file) {
 }
 
 const EXAMPLES = [
-  { name: 'Soupe de potimarron', seasons: ['automne', 'hiver'], moments: ['soir'], protein: false, tags: ['rapide'],
+  { name: 'Soupe de potimarron', seasons: ['automne', 'hiver'], moments: ['soir'], regime: 'vege', tags: ['rapide'],
     ingredients: '1 potimarron\n2 oignons\n50 cl de bouillon de légumes\n10 cl de crème\n1 pincée de muscade', notes: 'Couper le potimarron sans l’éplucher, faire revenir avec les oignons, couvrir de bouillon, cuire 25 min, mixer avec la crème.' },
-  { name: 'Salade de lentilles et feta', seasons: ['printemps', 'ete'], moments: ['midi'], protein: true, tags: ['à emporter'],
+  { name: 'Salade de lentilles et feta', seasons: ['printemps', 'ete'], moments: ['midi'], regime: 'vege', tags: ['à emporter'],
     ingredients: '200 g de lentilles vertes\n100 g de feta\n1 oignon rouge\n1 botte de persil\n2 c. à soupe d’huile d’olive', notes: 'Cuire les lentilles 20 min, laisser tiédir, mélanger avec le reste.' },
-  { name: 'Gratin dauphinois', seasons: ['automne', 'hiver'], moments: ['soir'], protein: false, tags: ['four'],
+  { name: 'Gratin dauphinois', seasons: ['automne', 'hiver'], moments: ['soir'], regime: 'vege', tags: ['four'],
     ingredients: '1 kg de pommes de terre\n50 cl de lait\n20 cl de crème\n1 gousse d’ail', notes: 'Trancher finement, cuire dans le lait 10 min, verser en plat avec la crème, 1 h à 160 °C.' },
-  { name: 'Poulet rôti au citron', seasons: [], moments: [], protein: true, tags: ['dimanche'],
+  { name: 'Poulet rôti au citron', seasons: [], moments: [], regime: 'carne', tags: ['dimanche'],
     ingredients: '1 poulet\n2 citrons\n4 gousses d’ail\n500 g de pommes de terre', notes: 'Citron et ail dans le poulet, 1 h 15 à 200 °C avec les pommes de terre autour.' }
 ];
 function loadExamples() {
@@ -729,10 +740,10 @@ document.addEventListener('click', e => {
     const f = S.filters, [k, v] = chip.dataset.filter.split(':');
     if (k === 'season') f.seasons.has(v) ? f.seasons.delete(v) : f.seasons.add(v);
     if (k === 'moment') f.moments.has(v) ? f.moments.delete(v) : f.moments.add(v);
-    if (k === 'protein') { const b = v === 'true'; f.protein = f.protein === b ? null : b; }
+    if (k === 'regime') f.regime = f.regime === v ? null : v;
     chip.parentElement.querySelectorAll('[data-filter]').forEach(c => {
       const [ck, cv] = c.dataset.filter.split(':');
-      const on = ck === 'season' ? f.seasons.has(cv) : ck === 'moment' ? f.moments.has(cv) : f.protein === (cv === 'true');
+      const on = ck === 'season' ? f.seasons.has(cv) : ck === 'moment' ? f.moments.has(cv) : f.regime === cv;
       c.setAttribute('aria-pressed', on);
     });
     renderRecipeList();
@@ -740,7 +751,7 @@ document.addEventListener('click', e => {
   }
   const tog = e.target.closest('[data-toggle]');
   if (tog) {
-    if (tog.dataset.toggle === 'protein') tog.parentElement.querySelectorAll('[data-toggle]').forEach(b => b.setAttribute('aria-pressed', b === tog));
+    if (tog.dataset.toggle === 'regime') tog.parentElement.querySelectorAll('[data-toggle]').forEach(b => b.setAttribute('aria-pressed', b === tog));
     else tog.setAttribute('aria-pressed', tog.getAttribute('aria-pressed') !== 'true');
     return;
   }
@@ -757,7 +768,7 @@ document.addEventListener('click', e => {
     case 'examples': loadExamples(); break;
     case 'gotorecettes': setTab('recettes'); break;
     case 'gotocourses': setTab('courses'); break;
-    case 'clearfilters': Object.assign(S.filters, { q: '', seasons: new Set(), moments: new Set(), protein: null }); render(); break;
+    case 'clearfilters': Object.assign(S.filters, { q: '', seasons: new Set(), moments: new Set(), regime: null }); render(); break;
     case 'open': openRecipe(id); break;
     case 'edit': openEditor(id); break;
     case 'save': submitEditor(id || null); break;

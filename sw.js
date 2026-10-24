@@ -1,6 +1,6 @@
 // Service worker : garde l'appli en cache pour qu'elle fonctionne hors ligne.
 // Pour publier une mise à jour, change le numéro de version ci-dessous.
-const VERSION = 'mes-recettes-v2';
+const VERSION = 'mes-recettes-v3';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', event => {
