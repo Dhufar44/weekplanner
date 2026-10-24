@@ -13,6 +13,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
+<!-- Configuration Firebase du foyer : fichier à créer soi-même (étape 8 du tutoriel). Absent = stockage local. -->
+<script src="firebase-config.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Young+Serif&display=swap" rel="stylesheet">
@@ -157,6 +159,12 @@ h3.lbl{font:600 .95rem var(--sans);margin:0}
 .toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-weight:600;font-size:.9rem;z-index:50;opacity:0;pointer-events:none;transition:opacity .2s;width:max-content;max-width:calc(100% - 32px);text-align:center}
 .toast.show{opacity:1}
 @media (prefers-reduced-motion:reduce){.toast{transition:none}}
+.net{background:var(--sunk);color:var(--muted);border-radius:10px;padding:8px 12px;font-size:.88rem;margin:0 0 12px}
+body.locked nav.tabs,body.locked .fab,body.locked #weekbar,body.locked [data-action="data"]{display:none!important}
+.gate{max-width:420px;margin:56px auto 0;text-align:center}
+.gate h2{font:400 1.5rem/1.2 var(--serif);margin:0 0 10px}
+.gate p{color:var(--muted);margin:0 0 20px}
+.gate .gate-alert{background:var(--sunk);color:var(--danger);border-radius:10px;padding:10px 12px}
 </style>
 </head>
 <body>
@@ -168,6 +176,7 @@ h3.lbl{font:600 .95rem var(--sans);margin:0}
     </div>
     <div class="weekbar" id="weekbar"></div>
   </header>
+  <p class="net" id="net" hidden>Hors ligne : tes modifications seront envoyées au retour du réseau.</p>
   <main id="main"><p class="empty-state">Chargement de tes recettes…</p></main>
 </div>
 <button class="fab" id="fab" data-action="new" hidden>+ Recette</button>
@@ -182,7 +191,7 @@ h3.lbl{font:600 .95rem var(--sans);margin:0}
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script>
+<script type="module">
 (() => {
 'use strict';
 /* ---------- helpers ---------- */
@@ -214,111 +223,259 @@ const fmtDay = d => `${d.getDate()} ${MONTHS[d.getMonth()]}`;
 const thisWeekKey = () => iso(mondayOf(new Date()));
 
 /* ---------- state ---------- */
+/* Version du format des données. Si le format change un jour, on incrémente ce numéro
+   et on ajoute l’étape de conversion dans normRecipe / normWeek (voir LISEZMOI). */
+const SCHEMA = 2;
 const S = {
-  tab: 'recettes', mode: 'loading', db: null, uid: null, downloads: null,
-  recipes: new Map(), weeks: {}, weekKey: thisWeekKey(), unsubWeek: null,
-  filters: { q: '', seasons: new Set([seasonOf(new Date())]), moments: new Set(), regime: null, onlyPicked: false, sort: 'oubli' }
+  tab: 'recettes', mode: 'loading', user: null, deniedEmail: '', errorMsg: '',
+  recipes: new Map(), weeks: {}, weekKey: thisWeekKey(),
+  filters: { q: '', seasons: new Set([seasonOf(new Date())]), moments: new Set(), regime: null, sort: 'oubli' }
 };
+const ready = () => S.mode === 'local' || S.mode === 'firebase';
 const LKEY = 'mes-recettes:v1';
-const standalone = !(window.claude && window.claude.use);
+const LKEY_DONE = 'mes-recettes:transfere';
+const FB_VERSION = '10.12.2';
+const FB_BASE = `https://www.gstatic.com/firebasejs/${FB_VERSION}/`;
+const FB = { auth: null, db: null, authM: null, fs: null, unsub: [], unsubWeek: null };
 
-/* ---------- storage ---------- */
-const queues = {};
-function enqueue(key, fn) {
-  const p = (queues[key] || Promise.resolve()).then(fn).catch(err => {
-    if (err && err.code === 'invalid_argument') toast('Enregistrement refusé : accès en lecture seule');
-    else if (err && err.code === 'quota_exceeded') toast('Espace plein : supprime quelques recettes');
-    else toast('Enregistrement impossible, réessaie dans un instant');
-    console.error(err);
-  });
-  queues[key] = p; return p;
+/* ---------- format des données ---------- */
+/* Une modification s’exprime comme un « patch » : seuls les champs cités changent,
+   les autres (y compris ceux ajoutés par une future version de l’appli) sont conservés. */
+const DEL = Object.freeze({ __op: 'del' });
+const union = (...vals) => ({ __op: 'union', vals });
+const removeVals = (...vals) => ({ __op: 'remove', vals });
+const isPlain = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const opOf = v => isPlain(v) && typeof v.__op === 'string' ? v.__op : null;
+function applyPatch(target, patch) {
+  const out = isPlain(target) ? { ...target } : {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    const op = opOf(v);
+    if (op === 'del') delete out[k];
+    else if (op === 'union') { const cur = Array.isArray(out[k]) ? out[k] : []; out[k] = [...cur, ...v.vals.filter(x => !cur.includes(x))]; }
+    else if (op === 'remove') out[k] = (Array.isArray(out[k]) ? out[k] : []).filter(x => !v.vals.includes(x));
+    else if (isPlain(v)) out[k] = applyPatch(out[k], v);
+    else out[k] = Array.isArray(v) ? v.slice() : v;
+  }
+  return out;
 }
-const base = () => S.db.doc(`data/users/${S.uid}/main`);
-const recipesCol = () => base().collection('recipes');
-const weeksCol = () => base().collection('weeks');
+/* Traduit un patch en écriture Firestore (fusion). Les objets vides sont ignorés :
+   avec une fusion, ils écraseraient le contenu existant. */
+function toFs(patch) {
+  const F = FB.fs, out = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    const op = opOf(v);
+    if (op === 'del') out[k] = F.deleteField();
+    else if (op === 'union') { if (v.vals.length) out[k] = F.arrayUnion(...v.vals); }
+    else if (op === 'remove') { if (v.vals.length) out[k] = F.arrayRemove(...v.vals); }
+    else if (isPlain(v)) { const sub = toFs(v); if (Object.keys(sub).length) out[k] = sub; }
+    else out[k] = v;
+  }
+  return out;
+}
+const SEASON_KEYS = SEASONS.map(s => s.k), MOMENT_KEYS = MOMENTS.map(m => m.k);
+const strArr = a => Array.isArray(a) ? a.filter(x => typeof x === 'string') : [];
+/* Lit une recette quel que soit son format et la ramène au format actuel.
+   v1 : champ « protein » (true/false) au lieu de « regime ». */
+function normRecipe(raw, id) {
+  const r = isPlain(raw) ? { ...raw } : {};
+  const regime = regimeOf(r);
+  delete r.protein; delete r.id;
+  return {
+    ...r, id,
+    name: String(r.name || 'Sans nom'),
+    seasons: strArr(r.seasons).filter(s => SEASON_KEYS.includes(s)),
+    moments: strArr(r.moments).filter(m => MOMENT_KEYS.includes(m)),
+    regime: regime || null,
+    ingredients: String(r.ingredients || ''),
+    notes: String(r.notes || ''),
+    tags: strArr(r.tags),
+    history: strArr(r.history).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+    created: Number(r.created) || 0,
+    updated: Number(r.updated) || 0,
+    v: SCHEMA
+  };
+}
+const emptyWeek = () => ({ v: SCHEMA, picks: [], done: {}, checked: {}, extras: {} });
+/* Lit une semaine quel que soit son format.
+   v1 : planning par jour (« slots »), articles en plus dans un tableau, clés de courses « nom|unité ». */
+function normWeek(raw, key) {
+  const w = isPlain(raw) ? raw : {};
+  const picks = strArr(w.picks);
+  const done = {};
+  if (isPlain(w.done)) for (const [k, d] of Object.entries(w.done)) if (typeof d === 'string') done[k] = d;
+  if (isPlain(w.slots)) Object.values(w.slots).forEach(s => {
+    if (s && typeof s.id === 'string') { if (!picks.includes(s.id)) picks.push(s.id); if (s.done && !done[s.id]) done[s.id] = key; }
+  });
+  const checked = {};
+  if (isPlain(w.checked)) for (const [k, v] of Object.entries(w.checked)) if (v === true && /^[a-z0-9_]+$/.test(k)) checked[k] = true;
+  const extras = {};
+  if (Array.isArray(w.extras)) w.extras.forEach((e, i) => { if (e && e.t) extras[/^[a-z0-9]+$/.test(e.id || '') ? e.id : newId()] = { t: String(e.t), done: !!e.done, at: i }; });
+  else if (isPlain(w.extras)) for (const [k, e] of Object.entries(w.extras)) if (isPlain(e) && e.t) extras[k] = { t: String(e.t), done: !!e.done, at: Number(e.at) || 0 };
+  return { ...w, slots: undefined, v: SCHEMA, picks: [...new Set(picks)], done, checked, extras };
+}
+function week(key = S.weekKey) { return S.weeks[key] || emptyWeek(); }
+const clean = o => JSON.parse(JSON.stringify(o)); // retire les champs undefined
 
+/* ---------- stockage local (quand Firebase n’est pas configuré) ---------- */
 function localLoad() {
   try { const d = JSON.parse(localStorage.getItem(LKEY)); if (d) return d; } catch (e) {}
   return { recipes: {}, weeks: {} };
 }
 function localSave() {
-  try { localStorage.setItem(LKEY, JSON.stringify({ recipes: Object.fromEntries(S.recipes), weeks: S.weeks })); }
+  if (S.mode !== 'local') return;
+  try { localStorage.setItem(LKEY, JSON.stringify({ schema: SCHEMA, recipes: Object.fromEntries(S.recipes), weeks: S.weeks })); }
   catch (e) { toast('Enregistrement impossible sur cet appareil'); }
 }
-function saveRecipe(r) {
-  r.updated = Date.now();
-  S.recipes.set(r.id, r);
-  if (S.mode === 'db') enqueue('r:' + r.id, () => recipesCol().doc(r.id).set(clone(r))); else localSave();
+
+/* ---------- API de données unique (local ou Firebase) ----------
+   L’écran est mis à jour tout de suite ; avec Firebase, l’écriture part dans la file
+   hors ligne de Firestore et la synchro corrige l’affichage si besoin. */
+function patchRecipe(id, patch) {
+  S.recipes.set(id, normRecipe(applyPatch(S.recipes.get(id) || {}, { ...patch, updated: Date.now() }), id));
+  if (S.mode === 'firebase') {
+    FB.fs.setDoc(FB.fs.doc(FB.db, 'recettes', id), toFs({ ...patch, v: SCHEMA, updated: Date.now() }), { merge: true }).catch(onWriteError);
+  } else localSave();
   refresh();
 }
-function deleteRecipe(id) {
+function removeRecipe(id) {
+  if (week().picks.includes(id)) patchWeek({ picks: removeVals(id), done: { [id]: DEL } });
   S.recipes.delete(id);
-  Object.keys(S.weeks).forEach(k => { const w = S.weeks[k]; if (w.picks && w.picks.includes(id)) { w.picks = w.picks.filter(x => x !== id); if (k === S.weekKey) saveWeek(k); } });
-  if (S.mode === 'db') enqueue('r:' + id, () => recipesCol().doc(id).delete()); else localSave();
+  if (S.mode === 'firebase') FB.fs.deleteDoc(FB.fs.doc(FB.db, 'recettes', id)).catch(onWriteError);
+  else localSave();
   refresh();
 }
-/* A week is a pool of recipes, no days. Older data with day slots is converted. */
-function normWeek(w, key) {
-  w = w || {};
-  if (!Array.isArray(w.picks)) {
-    w.picks = []; w.done = w.done || {};
-    Object.values(w.slots || {}).forEach(s => {
-      if (s && s.id && !w.picks.includes(s.id)) w.picks.push(s.id);
-      if (s && s.done) w.done[s.id] = key;
-    });
+function patchWeek(patch, key = S.weekKey) {
+  S.weeks[key] = normWeek(applyPatch(week(key), patch), key);
+  if (S.mode === 'firebase') {
+    FB.fs.setDoc(FB.fs.doc(FB.db, 'semaines', key), toFs({ ...patch, v: SCHEMA }), { merge: true }).catch(onWriteError);
+  } else localSave();
+  refresh();
+}
+function onWriteError(e) {
+  console.error(e);
+  if (e && e.code === 'permission-denied') return denied();
+  toast(`Enregistrement impossible (${(e && e.code) || 'erreur'})`);
+}
+let prevLoaded = {};
+function loadWeekOnce(key) {
+  if (S.mode !== 'firebase' || S.weeks[key] || prevLoaded[key]) return;
+  prevLoaded[key] = true;
+  FB.fs.getDoc(FB.fs.doc(FB.db, 'semaines', key))
+    .then(snap => { if (snap.exists()) { S.weeks[key] = normWeek(snap.data(), key); refresh(); } })
+    .catch(() => {});
+}
+
+/* ---------- Firebase : connexion et synchronisation ---------- */
+/* chargement de Firebase, connexion Google,
+   gestion des accès refusés et déconnexion (fonctions initFirebase à signOutNow). */
+async function initFirebase(cfg) {
+  try {
+    const [appM, authM, fs] = await Promise.all([
+      import(FB_BASE + 'firebase-app.js'),
+      import(FB_BASE + 'firebase-auth.js'),
+      import(FB_BASE + 'firebase-firestore.js')
+    ]);
+    FB.authM = authM; FB.fs = fs;
+    const app = appM.initializeApp(cfg);
+    FB.auth = authM.getAuth(app);
+    try {
+      FB.db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) });
+    } catch (e) {
+      console.warn('Cache hors ligne indisponible, synchro sans copie locale', e);
+      FB.db = fs.getFirestore(app);
+    }
+  } catch (e) {
+    console.error(e);
+    S.mode = 'error';
+    S.errorMsg = 'Impossible de charger Firebase. Le tout premier lancement demande une connexion internet : vérifie-la puis réessaie.';
+    render(); return;
   }
-  delete w.slots;
-  w.done ||= {}; w.checked ||= {}; w.extras ||= [];
-  return w;
+  FB.authM.getRedirectResult(FB.auth).catch(authError);
+  FB.authM.onAuthStateChanged(FB.auth, user => {
+    if (user) startSync(user);
+    else { stopSync(); if (S.mode !== 'denied') S.mode = 'login'; render(); }
+  });
 }
-function week(key = S.weekKey) { S.weeks[key] = normWeek(S.weeks[key], key); return S.weeks[key]; }
-function saveWeek(key = S.weekKey) {
-  const w = week(key);
-  if (S.mode === 'db') enqueue('w:' + key, () => weeksCol().doc(key).set(clone(w))); else localSave();
-  refresh();
+function startSync(user) {
+  stopSync();
+  S.user = { email: user.email || '' };
+  S.mode = 'firebase';
+  FB.unsub.push(FB.fs.onSnapshot(FB.fs.collection(FB.db, 'recettes'), snap => {
+    const m = new Map();
+    snap.docs.forEach(d => m.set(d.id, normRecipe(d.data(), d.id)));
+    S.recipes = m; refresh();
+  }, onSyncError));
+  subscribeWeek();
+  render();
 }
 function subscribeWeek() {
-  if (S.mode !== 'db') return;
-  if (S.unsubWeek) S.unsubWeek();
+  if (S.mode !== 'firebase') return;
+  if (FB.unsubWeek) FB.unsubWeek();
   const key = S.weekKey;
-  S.unsubWeek = weeksCol().doc(key).onSnapshot(snap => {
-    S.weeks[key] = normWeek(snap.exists ? clone(snap.data()) : null, key);
-    refresh();
-  }, err => console.error(err));
+  FB.unsubWeek = FB.fs.onSnapshot(FB.fs.doc(FB.db, 'semaines', key), snap => {
+    S.weeks[key] = snap.exists() ? normWeek(snap.data(), key) : emptyWeek();
+    if (key === S.weekKey) refresh();
+  }, onSyncError);
 }
-let prevWeekLoaded = {};
-async function loadWeekOnce(key) {
-  if (S.mode !== 'db' || S.weeks[key] || prevWeekLoaded[key]) return;
-  prevWeekLoaded[key] = true;
-  try { const snap = await weeksCol().doc(key).get(); if (snap.exists) { S.weeks[key] = normWeek(clone(snap.data()), key); refresh(); } } catch (e) {}
+function stopSync() {
+  FB.unsub.forEach(u => u()); FB.unsub = [];
+  if (FB.unsubWeek) { FB.unsubWeek(); FB.unsubWeek = null; }
+  S.recipes = new Map(); S.weeks = {}; S.user = null; prevLoaded = {};
 }
+function onSyncError(e) {
+  console.error(e);
+  if (e && e.code === 'permission-denied') denied();
+  else toast(`Synchronisation interrompue (${(e && e.code) || 'erreur'})`);
+}
+/* Compte connecté mais refusé par les règles Firestore : on vide l’écran et on déconnecte. */
+function denied() {
+  if (S.mode === 'denied') return;
+  S.deniedEmail = S.user ? S.user.email : '';
+  stopSync(); S.mode = 'denied'; closeSheet(); render();
+  FB.authM.signOut(FB.auth).catch(() => {});
+}
+async function signIn() {
+  const provider = new FB.authM.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  try {
+    await FB.authM.signInWithPopup(FB.auth, provider);
+  } catch (e) {
+    if (e && (e.code === 'auth/popup-blocked' || e.code === 'auth/operation-not-supported-in-this-environment')) {
+      try { await FB.authM.signInWithRedirect(FB.auth, provider); } catch (e2) { authError(e2); }
+    } else authError(e);
+  }
+}
+function authError(e) {
+  if (!e || !e.code || e.code === 'auth/popup-closed-by-user' || e.code === 'auth/cancelled-popup-request') return;
+  console.error(e);
+  const msg = {
+    'auth/network-request-failed': 'Pas de connexion internet : la première connexion demande du réseau.',
+    'auth/unauthorized-domain': 'Ce site n’est pas dans les domaines autorisés de Firebase (étape 3 du tutoriel).'
+  }[e.code];
+  toast(msg || `Connexion impossible (${e.code})`);
+}
+function signOutNow() { closeSheet(); FB.authM.signOut(FB.auth).catch(authError); }
 
 async function init() {
   const h = location.hash.slice(1);
-  setTab(['semaine', 'recettes', 'courses'].includes(h) ? h : 'recettes');
-  let db = null, user = null, dl = null;
-  if (!standalone) {
-    try { [db, user, dl] = await Promise.all([window.claude.use('db'), window.claude.use('user'), window.claude.use('downloads')]); }
-    catch (e) { console.error(e); }
-  }
-  S.downloads = dl;
-  const id = user ? await user.id() : null;
-  if (db && id) {
-    S.db = db; S.uid = id; S.mode = 'db';
-    recipesCol().onSnapshot(snap => {
-      const m = new Map();
-      snap.docs.forEach(d => m.set(d.id, clone(d.data())));
-      S.recipes = m; refresh();
-    }, err => { console.error(err); toast('Connexion aux recettes perdue, recharge la page'); });
-    subscribeWeek();
+  S.tab = ['semaine', 'recettes', 'courses'].includes(h) ? h : 'recettes';
+  window.addEventListener('online', renderNet);
+  window.addEventListener('offline', renderNet);
+  const cfg = window.FIREBASE_CONFIG;
+  if (isPlain(cfg) && cfg.apiKey && cfg.projectId) {
+    render();
+    await initFirebase(cfg);
   } else {
     S.mode = 'local';
     const d = localLoad();
-    S.recipes = new Map(Object.entries(d.recipes || {}));
-    S.weeks = d.weeks || {};
+    S.recipes = new Map(Object.entries(isPlain(d.recipes) ? d.recipes : {}).map(([id, r]) => [id, normRecipe(r, id)]));
+    S.weeks = {};
+    Object.entries(isPlain(d.weeks) ? d.weeks : {}).forEach(([k, w]) => { S.weeks[k] = clean(normWeek(w, k)); });
+    setTab(S.tab);
   }
-  render();
-  if (standalone && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').catch(e => console.warn('Service worker non enregistré', e));
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   }
@@ -421,6 +578,12 @@ function parseQty(s) {
   return Number(s);
 }
 const nameKey = n => norm(n).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).map(w => w.length > 3 ? w.replace(/[sx]$/, '') : w).join(' ');
+/* Clé d’un article de courses : uniquement [a-z0-9_] pour servir de nom de champ Firestore. */
+function shopKey(p) {
+  const n = nameKey(p.name).replace(/ /g, '_') || 'article';
+  const u = p.qty == null ? 'x' : (norm(p.unit).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'u');
+  return `${n}__${u}`;
+}
 function parseLine(line) {
   const t = line.replace(/^[-•*]\s*/, '').trim();
   if (!t) return null;
@@ -450,7 +613,7 @@ function shoppingList() {
     const r = S.recipes.get(id); if (!r) return;
     (r.ingredients || '').split('\n').forEach(line => {
       const p = parseLine(line); if (!p) return;
-      const key = nameKey(p.name) + '|' + (p.qty == null ? '-' : p.unit);
+      const key = shopKey(p);
       let it = map.get(key);
       if (!it) { it = { key, name: p.name, unit: p.unit, qty: p.qty == null ? null : 0, src: new Set() }; map.set(key, it); }
       if (p.qty != null && it.qty != null) it.qty += p.qty;
@@ -465,7 +628,6 @@ function setTab(t) {
   S.tab = t;
   try { if (location.hash.slice(1) !== t) history.replaceState(null, '', '#' + t); } catch (e) {}
   document.querySelectorAll('nav.tabs button').forEach(b => { if (b.dataset.tab === t) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  $('#title').textContent = { semaine: 'Ma semaine', recettes: 'Mes recettes', courses: 'Mes courses' }[t];
   render();
   window.scrollTo(0, 0);
 }
@@ -478,8 +640,26 @@ function renderWeekBar() {
     <button class="icon-btn" data-action="nextweek" aria-label="Semaine suivante">›</button>`;
   $('#badge').textContent = n || '';
 }
+function renderNet() { const n = $('#net'); if (n) n.hidden = !(S.mode === 'firebase' && !navigator.onLine); }
+function renderGate() {
+  $('#title').textContent = 'Mes recettes';
+  const main = $('#main');
+  if (S.mode === 'loading') { main.innerHTML = '<p class="empty-state">Chargement…</p>'; return; }
+  if (S.mode === 'error') {
+    main.innerHTML = `<div class="gate"><p>${esc(S.errorMsg)}</p><button class="btn primary" data-action="reload">Réessayer</button></div>`;
+    return;
+  }
+  main.innerHTML = `<div class="gate"><h2>Bienvenue</h2>
+    ${S.mode === 'denied'
+      ? `<p class="gate-alert">Le compte ${esc(S.deniedEmail)} n’a pas accès aux recettes du foyer. Connecte-toi avec un compte autorisé.</p>`
+      : '<p>Connecte-toi avec ton compte Google pour retrouver les recettes partagées du foyer.</p>'}
+    <button class="btn primary" data-action="signin">Se connecter avec Google</button></div>`;
+}
 function render() {
-  if (S.mode === 'loading') return;
+  document.body.classList.toggle('locked', !ready());
+  renderNet();
+  if (!ready()) { renderGate(); return; }
+  $('#title').textContent = { semaine: 'Ma semaine', recettes: 'Mes recettes', courses: 'Mes courses' }[S.tab];
   $('#fab').hidden = S.tab !== 'recettes';
   renderWeekBar();
   const main = $('#main');
@@ -500,7 +680,8 @@ function render() {
   }
 }
 function refresh() {
-  if (S.mode === 'loading') return;
+  if (!ready()) return;
+  renderNet();
   renderWeekBar();
   if (S.tab === 'recettes') renderRecipeList();
   else if (S.tab === 'semaine') renderPool();
@@ -525,7 +706,7 @@ function renderPool() {
   if (!recs.length) {
     const prevKey = iso(addDays(parseIso(S.weekKey), -7));
     loadWeekOnce(prevKey);
-    const pw = S.weeks[prevKey] ? normWeek(S.weeks[prevKey], prevKey) : null;
+    const pw = S.weeks[prevKey] || null;
     const left = pw ? pw.picks.filter(id => S.recipes.has(id) && !pw.done[id]) : [];
     el.innerHTML = `<div class="empty-state"><p>Aucune recette prévue cette semaine. Parcours tes recettes et touche + sur celles qui te tentent.</p>
       <div class="btns center"><button class="btn primary" data-action="gotorecettes">Parcourir mes recettes</button>
@@ -549,9 +730,9 @@ function renderPool() {
 }
 function renderShop() {
   const el = $('#shop'); if (!el) return;
-  const w = week(), items = shoppingList();
-  const total = items.length + w.extras.length;
-  const done = items.filter(i => w.checked[i.key]).length + w.extras.filter(e => e.done).length;
+  const w = week(), items = shoppingList(), exts = extrasOf(w);
+  const total = items.length + exts.length;
+  const done = items.filter(i => w.checked[i.key]).length + exts.filter(e => e.done).length;
   let html = '';
   if (!total) {
     html = `<div class="empty-state"><p>Rien à acheter pour l’instant. Ajoute des recettes à ta semaine et leurs ingrédients apparaîtront ici.</p>
@@ -564,8 +745,8 @@ function renderShop() {
       <input type="checkbox" id="it${n}" data-action="tick" data-key="${esc(it.key)}"${w.checked[it.key] ? ' checked' : ''}>
       <label for="it${n}"><span class="nm">${esc(it.name)}</span><span class="qt">${esc(fmtQty(it.qty, it.unit))}</span>
       <span class="src">${esc([...it.src].join(', '))}</span></label></div>`).join('');
-    if (w.extras.length) {
-      html += '<h2 class="sub">En plus</h2>' + w.extras.map((e, n) => `<div class="item${e.done ? ' checked' : ''}">
+    if (exts.length) {
+      html += '<h2 class="sub">En plus</h2>' + exts.map((e, n) => `<div class="item${e.done ? ' checked' : ''}">
         <input type="checkbox" id="ex${n}" data-action="tickextra" data-id="${esc(e.id)}"${e.done ? ' checked' : ''}>
         <label for="ex${n}"><span class="nm">${esc(e.t)}</span></label>
         <button class="rm" data-action="rmextra" data-id="${esc(e.id)}" aria-label="Retirer ${esc(e.t)}">×</button></div>`).join('');
@@ -630,43 +811,59 @@ function submitEditor(id) {
   const name = F('name').value.trim();
   if (!name) { F('name').focus(); toast('Donne un nom à ta recette'); return; }
   const picked = k => [...form.querySelectorAll(`[data-toggle="${k}"][aria-pressed="true"]`)].map(b => b.dataset.v);
-  const old = id ? S.recipes.get(id) : null;
-  const r = old ? clone(old) : { id: newId(), created: Date.now(), history: [] };
-  r.name = name;
-  r.seasons = picked('seasons');
-  r.moments = picked('moments');
   const regime = picked('regime')[0];
   if (!regime) { toast('Indique si la recette est végé ou carnée'); form.querySelector('[data-toggle="regime"]').focus(); return; }
-  r.regime = regime;
-  delete r.protein;
-  r.ingredients = F('ingredients').value.trim();
-  r.notes = F('notes').value.trim();
-  r.tags = F('tags').value.split(',').map(s => s.trim()).filter(Boolean);
-  r.history ||= [];
+  const old = id ? S.recipes.get(id) : null;
+  const rid = old ? old.id : newId();
   const last = F('last').value;
-  if (last && last !== lastMade(r) && !r.history.includes(last)) r.history.push(last);
-  saveRecipe(r);
-  if (!old && F('addweek') && F('addweek').checked) { week().picks.push(r.id); saveWeek(); }
-  openRecipe(r.id);
+  const patch = {
+    name, regime,
+    seasons: picked('seasons'),
+    moments: picked('moments'),
+    ingredients: F('ingredients').value.trim(),
+    notes: F('notes').value.trim(),
+    tags: F('tags').value.split(',').map(s => s.trim()).filter(Boolean),
+    protein: DEL
+  };
+  if (!old) { patch.created = Date.now(); patch.history = last ? [last] : []; }
+  else if (last && last !== lastMade(old) && !old.history.includes(last)) patch.history = union(last);
+  patchRecipe(rid, patch);
+  if (!old && F('addweek') && F('addweek').checked) patchWeek({ picks: union(rid) });
+  openRecipe(rid);
   toast(old ? 'Recette mise à jour' : 'Recette ajoutée');
 }
 
 function openData() {
-  const n = S.recipes.size;
+  const n = S.recipes.size, fb = S.mode === 'firebase';
+  let nLocal = 0, transferred = null;
+  if (fb) {
+    const loc = localLoad();
+    nLocal = isPlain(loc.recipes) ? Object.keys(loc.recipes).length : 0;
+    try { transferred = localStorage.getItem(LKEY_DONE); } catch (e) {}
+  }
   openSheet(`${head('Mes données')}<div class="sheet-body">
-    <p style="margin-top:0">${S.mode === 'db' ? 'Tes recettes sont enregistrées dans ton espace Claude, privé, et se synchronisent entre tes appareils.' : 'Tes recettes sont enregistrées sur cet appareil et restent disponibles hors ligne.'}</p>
-    <p>${plural(n, 'recette')}. Exporte-les régulièrement : le fichier JSON est ta sauvegarde, et il permet de transférer tes recettes d’un appareil ou d’une version de l’appli à une autre.</p>
+    ${fb ? `<p style="margin-top:0">Connecté avec <strong>${esc(S.user.email)}</strong>. Les recettes du foyer sont partagées et synchronisées automatiquement, et restent disponibles hors ligne.</p>`
+         : '<p style="margin-top:0">Firebase n’est pas configuré (fichier <code>firebase-config.js</code> absent) : tes recettes sont enregistrées sur ce téléphone seulement.</p>'}
+    <p>${plural(n, 'recette')}. L’export JSON reste ta sauvegarde : fais-en un de temps en temps.</p>
     <div class="btns"><button class="btn primary" data-action="export">Exporter (JSON)</button><button class="btn" data-action="import">Importer un fichier</button></div>
-    <p class="kv" style="margin-top:16px">L’import ajoute les recettes du fichier et remplace celles qui ont le même identifiant.</p></div>`);
+    <p class="kv" style="margin-top:12px">L’import ajoute les recettes du fichier et met à jour celles qui ont le même identifiant.</p>
+    ${fb && nLocal && !transferred ? `<h3 class="lbl" style="margin-top:20px">Recettes de ce téléphone</h3>
+      <p class="kv">${plural(nLocal, 'recette')} enregistrée${nLocal > 1 ? 's' : ''} sur ce téléphone avant Firebase. Envoie-les dans la base commune ; une seule fois suffit.</p>
+      <button class="btn" data-action="transfer">Envoyer dans la base commune</button>` : ''}
+    ${fb ? '<div class="btns" style="margin-top:24px"><button class="btn danger" data-action="signout">Se déconnecter</button></div>' : ''}
+  </div>`);
+}
+async function allWeeks() {
+  if (S.mode !== 'firebase') return S.weeks;
+  try {
+    const snap = await FB.fs.getDocs(FB.fs.collection(FB.db, 'semaines'));
+    return Object.fromEntries(snap.docs.map(d => [d.id, normWeek(d.data(), d.id)]));
+  } catch (e) { return S.weeks; }
 }
 async function doExport() {
-  const data = JSON.stringify({ app: 'mes-recettes', version: 2, exported: new Date().toISOString(), recipes: [...S.recipes.values()], weeks: S.weeks }, null, 2);
+  const data = JSON.stringify(clean({ app: 'mes-recettes', schema: SCHEMA, exported: new Date().toISOString(),
+    recipes: [...S.recipes.values()], weeks: await allWeeks() }), null, 2);
   const filename = `mes-recettes-${todayIso()}.json`;
-  if (S.downloads) {
-    try { await S.downloads.save({ filename, data }); toast('Export enregistré'); }
-    catch (e) { if (e && e.code !== 'declined') toast('Export impossible ici'); }
-    return;
-  }
   try {
     const file = new File([data], filename, { type: 'application/json' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: filename }); return; }
@@ -674,24 +871,37 @@ async function doExport() {
     a.href = URL.createObjectURL(file); a.download = filename; document.body.appendChild(a); a.click(); a.remove();
   } catch (e) { if (e && e.name !== 'AbortError') toast('Export impossible ici'); }
 }
+/* Importe un export JSON (ou les données locales du téléphone), quel que soit son format. */
+function importData(d) {
+  const list = Array.isArray(d.recipes) ? d.recipes
+    : Object.entries(isPlain(d.recipes) ? d.recipes : {}).map(([id, r]) => ({ ...r, id: (r && r.id) || id }));
+  const recipes = list.filter(r => isPlain(r) && typeof r.name === 'string')
+    .map(r => normRecipe(r, typeof r.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(r.id) ? r.id : newId()));
+  const weeks = Object.entries(isPlain(d.weeks) ? d.weeks : {})
+    .filter(([k]) => /^\d{4}-\d{2}-\d{2}$/.test(k)).map(([k, w]) => [k, normWeek(w, k)]);
+  recipes.forEach(r => S.recipes.set(r.id, r));
+  weeks.forEach(([k, w]) => { S.weeks[k] = w; });
+  if (S.mode === 'firebase') {
+    const writes = [...recipes.map(r => { const { id, ...rest } = r; return ['recettes', id, rest]; }), ...weeks.map(([k, w]) => ['semaines', k, w])];
+    for (let i = 0; i < writes.length; i += 400) {
+      const b = FB.fs.writeBatch(FB.db);
+      writes.slice(i, i + 400).forEach(([col, id, data]) => b.set(FB.fs.doc(FB.db, col, id), toFs(data), { merge: true }));
+      b.commit().catch(onWriteError);
+    }
+  } else localSave();
+  refresh();
+  return recipes.length;
+}
 async function doImport(file) {
-  try {
-    const d = JSON.parse(await file.text());
-    const list = Array.isArray(d.recipes) ? d.recipes : Object.values(d.recipes || {});
-    let n = 0;
-    for (const r of list) {
-      if (!r || typeof r.name !== 'string') continue;
-      r.id ||= newId(); S.recipes.set(r.id, r); n++;
-      if (S.mode === 'db') await enqueue('r:' + r.id, () => recipesCol().doc(r.id).set(clone(r)));
-    }
-    if (d.weeks && typeof d.weeks === 'object') for (const [k, w] of Object.entries(d.weeks)) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) continue;
-      S.weeks[k] = normWeek(w, k);
-      if (S.mode === 'db') await enqueue('w:' + k, () => weeksCol().doc(k).set(clone(S.weeks[k])));
-    }
-    if (S.mode !== 'db') localSave();
-    refresh(); closeSheet(); toast(`${plural(n, 'recette')} importée${n > 1 ? 's' : ''}`);
-  } catch (e) { toast('Ce fichier n’est pas un export valide'); }
+  let d;
+  try { d = JSON.parse(await file.text()); } catch (e) { toast('Ce fichier n’est pas un export valide'); return; }
+  const n = importData(isPlain(d) ? d : {});
+  closeSheet(); toast(`${plural(n, 'recette')} importée${n > 1 ? 's' : ''}`);
+}
+function transferLocal() {
+  const n = importData(localLoad());
+  try { localStorage.setItem(LKEY_DONE, todayIso()); } catch (e) {}
+  closeSheet(); toast(`${plural(n, 'recette')} envoyée${n > 1 ? 's' : ''} dans la base commune`);
 }
 
 const EXAMPLES = [
@@ -705,31 +915,28 @@ const EXAMPLES = [
     ingredients: '1 poulet\n2 citrons\n4 gousses d’ail\n500 g de pommes de terre', notes: 'Citron et ail dans le poulet, 1 h 15 à 200 °C avec les pommes de terre autour.' }
 ];
 function loadExamples() {
-  EXAMPLES.forEach(e => saveRecipe({ ...clone(e), id: newId(), created: Date.now(), history: [] }));
+  EXAMPLES.forEach(e => patchRecipe(newId(), { ...clone(e), created: Date.now(), history: [] }));
   toast('4 recettes d’exemple ajoutées, modifie-les ou supprime-les quand tu veux');
 }
+const extrasOf = w => Object.entries(w.extras).map(([id, e]) => ({ id, ...e })).sort((a, b) => a.at - b.at);
 function plainShop() {
   const w = week();
   return [...shoppingList().filter(i => !w.checked[i.key]).map(i => `- ${i.name}${i.qty != null ? ' : ' + fmtQty(i.qty, i.unit) : ''}`),
-    ...w.extras.filter(e => !e.done).map(e => `- ${e.t}`)].join('\n');
+    ...extrasOf(w).filter(e => !e.done).map(e => `- ${e.t}`)].join('\n');
 }
 
 /* ---------- events ---------- */
 let toastT;
-function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2600); }
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2800); }
 
 function togglePick(id) {
-  const w = week();
-  if (w.picks.includes(id)) { w.picks = w.picks.filter(x => x !== id); delete w.done[id]; }
-  else w.picks.push(id);
-  saveWeek();
+  if (isPicked(id)) patchWeek({ picks: removeVals(id), done: { [id]: DEL } });
+  else patchWeek({ picks: union(id) });
 }
 function toggleDone(id) {
-  const w = week(), r = S.recipes.get(id); if (!r) return;
-  const c = clone(r); c.history ||= [];
-  if (w.done[id]) { const d = w.done[id]; delete w.done[id]; c.history = c.history.filter(h => h !== d); }
-  else { const d = todayIso(); w.done[id] = d; if (!c.history.includes(d)) c.history.push(d); }
-  saveRecipe(c); saveWeek();
+  const w = week(); if (!S.recipes.has(id)) return;
+  if (w.done[id]) { const d = w.done[id]; patchWeek({ done: { [id]: DEL } }); patchRecipe(id, { history: removeVals(d) }); }
+  else { const d = todayIso(); patchWeek({ done: { [id]: d } }); patchRecipe(id, { history: union(d) }); }
 }
 
 document.addEventListener('click', e => {
@@ -760,10 +967,14 @@ document.addEventListener('click', e => {
   const { action, id } = a.dataset;
   const w = week();
   switch (action) {
+    case 'signin': signIn(); break;
+    case 'signout': signOutNow(); break;
+    case 'reload': location.reload(); break;
     case 'close': closeSheet(); break;
     case 'data': openData(); break;
     case 'export': doExport(); break;
     case 'import': $('#importFile').click(); break;
+    case 'transfer': transferLocal(); break;
     case 'new': openEditor(null); break;
     case 'examples': loadExamples(); break;
     case 'gotorecettes': setTab('recettes'); break;
@@ -774,7 +985,7 @@ document.addEventListener('click', e => {
     case 'save': submitEditor(id || null); break;
     case 'delete': {
       const r = S.recipes.get(id);
-      if (r && confirm(`Supprimer « ${r.name} » ?`)) { deleteRecipe(id); closeSheet(); toast('Recette supprimée'); }
+      if (r && confirm(`Supprimer « ${r.name} » ?`)) { removeRecipe(id); closeSheet(); toast('Recette supprimée'); }
       break;
     }
     case 'pick': {
@@ -785,15 +996,21 @@ document.addEventListener('click', e => {
     }
     case 'done': toggleDone(id); break;
     case 'carryover': {
-      const prevKey = iso(addDays(parseIso(S.weekKey), -7)), pw = normWeek(S.weeks[prevKey], prevKey);
-      pw.picks.filter(x => S.recipes.has(x) && !pw.done[x] && !w.picks.includes(x)).forEach(x => w.picks.push(x));
-      saveWeek(); break;
+      const pw = S.weeks[iso(addDays(parseIso(S.weekKey), -7))];
+      const ids = pw ? pw.picks.filter(x => S.recipes.has(x) && !pw.done[x] && !w.picks.includes(x)) : [];
+      if (ids.length) patchWeek({ picks: union(...ids) });
+      break;
     }
     case 'prevweek': case 'nextweek': case 'thisweek':
       S.weekKey = action === 'thisweek' ? thisWeekKey() : iso(addDays(parseIso(S.weekKey), action === 'prevweek' ? -7 : 7));
       subscribeWeek(); refresh(); break;
-    case 'rmextra': w.extras = w.extras.filter(x => x.id !== id); saveWeek(); break;
-    case 'uncheck': w.checked = {}; w.extras.forEach(x => x.done = false); saveWeek(); break;
+    case 'rmextra': patchWeek({ extras: { [id]: DEL } }); break;
+    case 'uncheck': {
+      const p = { checked: {}, extras: {} };
+      Object.keys(w.checked).forEach(k => { p.checked[k] = DEL; });
+      Object.entries(w.extras).forEach(([k, x]) => { if (x.done) p.extras[k] = { done: false }; });
+      patchWeek(p); break;
+    }
     case 'copyshop': {
       const txt = plainShop();
       (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast('Liste copiée'), () => toast('Copie impossible ici'));
@@ -803,8 +1020,8 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.action === 'tick') { const w = week(); if (t.checked) w.checked[t.dataset.key] = true; else delete w.checked[t.dataset.key]; saveWeek(); }
-  if (t.dataset.action === 'tickextra') { const x = week().extras.find(x => x.id === t.dataset.id); if (x) { x.done = t.checked; saveWeek(); } }
+  if (t.dataset.action === 'tick') patchWeek({ checked: { [t.dataset.key]: t.checked ? true : DEL } });
+  if (t.dataset.action === 'tickextra') patchWeek({ extras: { [t.dataset.id]: { done: t.checked } } });
   if (t.hasAttribute('data-sort')) { S.filters.sort = t.value; renderRecipeList(); }
   if (t.id === 'importFile' && t.files[0]) { doImport(t.files[0]); t.value = ''; }
 });
@@ -815,7 +1032,8 @@ document.addEventListener('submit', e => {
   e.preventDefault();
   if (e.target.id === 'addExtra') {
     const inp = $('#extra'), v = inp.value.trim(); if (!v) return;
-    week().extras.push({ id: newId(), t: v, done: false }); inp.value = ''; saveWeek(); inp.focus();
+    patchWeek({ extras: { [newId()]: { t: v, done: false, at: Date.now() } } });
+    inp.value = ''; inp.focus();
   }
 });
 window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (h !== S.tab && ['semaine', 'recettes', 'courses'].includes(h)) setTab(h); });
