@@ -98,6 +98,19 @@ nav.tabs .badge:empty{display:none}
 .pill{border-radius:6px;background:var(--sunk);padding:1px 7px;font-weight:500}
 .pill-vege{color:var(--spr);font-weight:600}
 .pill-carne{color:var(--aut);font-weight:600}
+.pill-dessert{color:var(--sum);font-weight:600}
+details.more{margin:4px 0 2px}
+details.more summary{cursor:pointer;color:var(--accent);font-weight:600;font-size:.9rem;padding:6px 0;list-style-position:inside}
+.badge-inline{display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:.75rem;text-align:center}
+.chip-select{border:1px dashed var(--line);background:var(--surface);border-radius:999px;padding:6px 10px;font-size:.88rem;color:var(--accent);font-weight:600}
+.select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.prep-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.prep-min{display:flex;align-items:center;gap:6px;font-weight:500}
+.prep-min input{width:90px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
+.item .calc{display:block;font-size:.8rem;color:var(--muted)}
+.item .detail{display:flex;flex-direction:column;gap:2px;margin-top:4px;padding:6px 8px;border-radius:8px;background:var(--sunk);font-size:.82rem;color:var(--ink)}
+.item .info{flex:none;width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:none;color:var(--muted);font-size:.8rem;font-weight:700;padding:0}
+.item .info[aria-expanded="true"]{background:var(--sunk);color:var(--accent)}
 .row-last{font-size:.8rem;color:var(--muted);text-align:right;white-space:nowrap}
 .row-last.old{color:var(--accent);font-weight:600}
 .pick{flex:none;width:44px;height:44px;border-radius:50%;border:2px solid var(--line);background:var(--surface);font-size:1.15rem;font-weight:700;color:var(--muted);display:grid;place-items:center}
@@ -212,9 +225,13 @@ const SEASONS = [
   { k: 'automne', l: 'Automne' }, { k: 'hiver', l: 'Hiver' }
 ];
 const MOMENTS = [{ k: 'midi', l: 'Midi' }, { k: 'soir', l: 'Soir' }];
-const REGIMES = [{ k: 'vege', l: 'Végé' }, { k: 'carne', l: 'Carné' }];
+const REGIMES = [{ k: 'vege', l: 'Végé' }, { k: 'carne', l: 'Carné' }, { k: 'dessert', l: 'Dessert' }];
+const CUISSONS = [{ k: 'cru', l: 'Cru' }, { k: 'four', l: 'Four' }, { k: 'poele', l: 'Poêle' }, { k: 'casserole', l: 'Casserole' }];
+const CUISSON_KEYS = CUISSONS.map(c => c.k);
+/* Catégories proposées d’office ; celles créées dans une recette s’y ajoutent automatiquement. */
+const DEFAULT_CATEGORIES = ['Curry', 'Gâteau', 'Gratin', 'Mijoté', 'Pâtes', 'Poêlée', 'Riz', 'Rôti', 'Salade', 'Soupe', 'Tarte salée', 'Tarte sucrée'];
 /* Régime d’une recette ; les anciennes recettes « avec/sans protéines » sont lues comme carné/végé. */
-const regimeOf = r => r.regime === 'vege' || r.regime === 'carne' ? r.regime : r.protein === true ? 'carne' : r.protein === false ? 'vege' : null;
+const regimeOf = r => ['vege', 'carne', 'dessert'].includes(r.regime) ? r.regime : r.protein === true ? 'carne' : r.protein === false ? 'vege' : null;
 const regimeLabel = k => (REGIMES.find(x => x.k === k) || {}).l || '';
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const seasonOf = d => { const m = d.getMonth(); return m >= 2 && m <= 4 ? 'printemps' : m >= 5 && m <= 7 ? 'ete' : m >= 8 && m <= 10 ? 'automne' : 'hiver'; };
@@ -229,7 +246,8 @@ const SCHEMA = 2;
 const S = {
   tab: 'recettes', mode: 'loading', user: null, deniedEmail: '', errorMsg: '',
   recipes: new Map(), weeks: {}, weekKey: thisWeekKey(),
-  filters: { q: '', seasons: new Set([seasonOf(new Date())]), moments: new Set(), regime: null, sort: 'oubli' }
+  moreOpen: false, openItems: new Set(), expired: false,
+  filters: { q: '', seasons: new Set([seasonOf(new Date())]), moments: new Set(), regimes: new Set(), cuissons: new Set(), categories: new Set(), sort: 'oubli' }
 };
 const ready = () => S.mode === 'local' || S.mode === 'firebase';
 const LKEY = 'mes-recettes:v1';
@@ -282,12 +300,17 @@ function normRecipe(raw, id) {
   const r = isPlain(raw) ? { ...raw } : {};
   const regime = regimeOf(r);
   delete r.protein; delete r.id;
+  const prep = Math.round(Number(r.prepMinutes));
   return {
     ...r, id,
     name: String(r.name || 'Sans nom'),
     seasons: strArr(r.seasons).filter(s => SEASON_KEYS.includes(s)),
     moments: strArr(r.moments).filter(m => MOMENT_KEYS.includes(m)),
     regime: regime || null,
+    category: typeof r.category === 'string' && r.category.trim() ? r.category.trim() : null,
+    cuissons: strArr(r.cuissons).filter(c => CUISSON_KEYS.includes(c)),
+    prepMinutes: prep > 0 && prep < 10000 ? prep : null,
+    veille: r.veille === true,
     ingredients: String(r.ingredients || ''),
     notes: String(r.notes || ''),
     tags: strArr(r.tags),
@@ -297,7 +320,7 @@ function normRecipe(raw, id) {
     v: SCHEMA
   };
 }
-const emptyWeek = () => ({ v: SCHEMA, picks: [], done: {}, checked: {}, extras: {} });
+const emptyWeek = () => ({ v: SCHEMA, picks: [], done: {}, mult: {}, checked: {}, extras: {} });
 /* Lit une semaine quel que soit son format.
    v1 : planning par jour (« slots »), articles en plus dans un tableau, clés de courses « nom|unité ». */
 function normWeek(raw, key) {
@@ -308,12 +331,14 @@ function normWeek(raw, key) {
   if (isPlain(w.slots)) Object.values(w.slots).forEach(s => {
     if (s && typeof s.id === 'string') { if (!picks.includes(s.id)) picks.push(s.id); if (s.done && !done[s.id]) done[s.id] = key; }
   });
+  const mult = {};
+  if (isPlain(w.mult)) for (const [k, m] of Object.entries(w.mult)) if (m === 2) mult[k] = 2;
   const checked = {};
   if (isPlain(w.checked)) for (const [k, v] of Object.entries(w.checked)) if (v === true && /^[a-z0-9_]+$/.test(k)) checked[k] = true;
   const extras = {};
   if (Array.isArray(w.extras)) w.extras.forEach((e, i) => { if (e && e.t) extras[/^[a-z0-9]+$/.test(e.id || '') ? e.id : newId()] = { t: String(e.t), done: !!e.done, at: i }; });
   else if (isPlain(w.extras)) for (const [k, e] of Object.entries(w.extras)) if (isPlain(e) && e.t) extras[k] = { t: String(e.t), done: !!e.done, at: Number(e.at) || 0 };
-  return { ...w, slots: undefined, v: SCHEMA, picks: [...new Set(picks)], done, checked, extras };
+  return { ...w, slots: undefined, v: SCHEMA, picks: [...new Set(picks)], done, mult, checked, extras };
 }
 function week(key = S.weekKey) { return S.weeks[key] || emptyWeek(); }
 const clean = o => JSON.parse(JSON.stringify(o)); // retire les champs undefined
@@ -367,9 +392,6 @@ function loadWeekOnce(key) {
     .catch(() => {});
 }
 
-/* ---------- Firebase : connexion et synchronisation ---------- */
-/* chargement de Firebase, connexion Google,
-   gestion des accès refusés et déconnexion (fonctions initFirebase à signOutNow). */
 async function initFirebase(cfg) {
   try {
     const [appM, authM, fs] = await Promise.all([
@@ -379,7 +401,11 @@ async function initFirebase(cfg) {
     ]);
     FB.authM = authM; FB.fs = fs;
     const app = appM.initializeApp(cfg);
-    FB.auth = authM.getAuth(app);
+    // Session gardée dans le stockage du téléphone (IndexedDB, sinon localStorage).
+    FB.auth = authM.initializeAuth(app, {
+      persistence: [authM.indexedDBLocalPersistence, authM.browserLocalPersistence],
+      popupRedirectResolver: authM.browserPopupRedirectResolver
+    });
     try {
       FB.db = fs.initializeFirestore(app, { localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) });
     } catch (e) {
@@ -394,18 +420,32 @@ async function initFirebase(cfg) {
   }
   FB.authM.getRedirectResult(FB.auth).catch(authError);
   FB.authM.onAuthStateChanged(FB.auth, user => {
-    if (user) startSync(user);
+    if (user && sessionTooOld(user)) {
+      S.expired = true; S.mode = 'login'; render();
+      FB.authM.signOut(FB.auth).catch(() => {});
+      return;
+    }
+    if (user) { S.expired = false; startSync(user); }
     else { stopSync(); if (S.mode !== 'denied') S.mode = 'login'; render(); }
   });
 }
+/* Une connexion Google réussie reste valable SESSION_MAX_DAYS jours, puis on redemande de se connecter.
+   La date vient de Firebase (dernière connexion interactive), pas du téléphone. */
+const SESSION_MAX_DAYS = 120;
+function sessionTooOld(user) {
+  const t = Date.parse(user && user.metadata && user.metadata.lastSignInTime);
+  return Number.isFinite(t) && Date.now() - t > SESSION_MAX_DAYS * 864e5;
+}
 function startSync(user) {
   stopSync();
-  S.user = { email: user.email || '' };
+  const since = Date.parse(user.metadata && user.metadata.lastSignInTime);
+  S.user = { email: user.email || '', since: Number.isFinite(since) ? since : null };
   S.mode = 'firebase';
   FB.unsub.push(FB.fs.onSnapshot(FB.fs.collection(FB.db, 'recettes'), snap => {
     const m = new Map();
     snap.docs.forEach(d => m.set(d.id, normRecipe(d.data(), d.id)));
     S.recipes = m; refresh();
+    if (S.tab === 'recettes') bilanSemaines();
   }, onSyncError));
   subscribeWeek();
   render();
@@ -474,6 +514,7 @@ async function init() {
     S.weeks = {};
     Object.entries(isPlain(d.weeks) ? d.weeks : {}).forEach(([k, w]) => { S.weeks[k] = clean(normWeek(w, k)); });
     setTab(S.tab);
+    bilanSemaines();
   }
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').catch(e => console.warn('Service worker non enregistré', e));
@@ -500,34 +541,44 @@ const isPicked = id => week().picks.includes(id);
 
 function filterRecipes(f) {
   const words = norm(f.q).split(/\s+/).filter(Boolean);
-  const picks = week().picks;
   let list = [...S.recipes.values()].filter(r => {
-    if (f.onlyPicked && !picks.includes(r.id)) return false;
-    if (f.seasons.size && r.seasons && r.seasons.length && !r.seasons.some(s => f.seasons.has(s))) return false;
-    if (f.moments.size && r.moments && r.moments.length && !r.moments.some(m => f.moments.has(m))) return false;
-    if (f.regime && regimeOf(r) !== f.regime) return false;
+    if (f.seasons.size && r.seasons.length && !r.seasons.some(s => f.seasons.has(s))) return false;
+    if (f.moments.size && r.moments.length && !r.moments.some(m => f.moments.has(m))) return false;
+    if (f.regimes.size && !f.regimes.has(regimeOf(r))) return false;
+    if (f.cuissons.size && !r.cuissons.some(c => f.cuissons.has(c))) return false;
+    if (f.categories.size && !(r.category && f.categories.has(norm(r.category)))) return false;
     if (words.length) {
-      const hay = norm([r.name, r.ingredients, (r.tags || []).join(' '), r.notes].join(' '));
+      const hay = norm([r.name, r.ingredients, r.tags.join(' '), r.notes, r.category || ''].join(' '));
       if (!words.every(w => hay.includes(w))) return false;
     }
     return true;
   });
   const byName = (a, b) => a.name.localeCompare(b.name, 'fr');
   if (f.sort === 'az') list.sort(byName);
+  else if (f.sort === 'za') list.sort((a, b) => byName(b, a));
   else if (f.sort === 'recent') list.sort((a, b) => (lastMade(b) || '').localeCompare(lastMade(a) || '') || byName(a, b));
   else list.sort((a, b) => (lastMade(a) || '').localeCompare(lastMade(b) || '') || byName(a, b));
   return list;
 }
 
+const fmtMinutes = m => m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ' ' + pad(m % 60) : ''}`;
+function prepPills(r) {
+  const p = [];
+  if (r.prepMinutes) p.push(`<span class="pill">⏱ ${fmtMinutes(r.prepMinutes)}</span>`);
+  if (r.veille) p.push('<span class="pill">La veille</span>');
+  return p.join('');
+}
+const typePill = r => { const rg = regimeOf(r); return rg ? `<span class="pill pill-${rg}">${regimeLabel(rg)}</span>` : ''; };
+const momentLabel = r => r.moments.length === 1 ? (r.moments[0] === 'midi' ? 'Midi' : 'Soir') : 'Midi ou soir';
 function metaHtml(r) {
   const parts = [];
-  if (r.seasons && r.seasons.length && r.seasons.length < 4) {
+  if (r.seasons.length && r.seasons.length < 4) {
     parts.push(`<span class="dots">${r.seasons.map(s => `<span class="dot d-${s}" title="${esc(SEASONS.find(x => x.k === s)?.l)}"></span>`).join('')}<span class="sr">${r.seasons.map(s => SEASONS.find(x => x.k === s)?.l).join(', ')}</span></span>`);
   } else parts.push('<span>Toute l’année</span>');
-  if (r.moments && r.moments.length === 1) parts.push(`<span class="pill">${r.moments[0] === 'midi' ? 'Midi' : 'Soir'}</span>`);
-  const rg = regimeOf(r);
-  if (rg) parts.push(`<span class="pill pill-${rg}">${regimeLabel(rg)}</span>`);
-  (r.tags || []).slice(0, 3).forEach(t => parts.push(`<span class="pill">${esc(t)}</span>`));
+  parts.push(typePill(r));
+  if (r.category) parts.push(`<span class="pill">${esc(r.category)}</span>`);
+  if (r.moments.length === 1) parts.push(`<span class="pill">${momentLabel(r)}</span>`);
+  parts.push(prepPills(r));
   return parts.join('');
 }
 function browseRow(r) {
@@ -538,26 +589,42 @@ function browseRow(r) {
       <span class="row-last${isOld(r) ? ' old' : ''}">${lastLabel(r)}</span></button>
     <button class="pick" data-action="pick" data-id="${esc(r.id)}" aria-pressed="${on}" aria-label="${on ? 'Retirer de ma semaine' : 'Ajouter à ma semaine'} : ${esc(r.name)}">${on ? '✓' : '+'}</button></div>`;
 }
-function poolRow(r, done) {
-  return `<div class="row${done ? ' done' : ''}">
+function poolRow(r) {
+  const dbl = week().mult[r.id] === 2;
+  return `<div class="row">
     <button class="row-btn" data-action="open" data-id="${esc(r.id)}">
-      <span class="row-main"><span class="row-name">${esc(r.name)}</span><span class="row-meta">${metaHtml(r)}</span></span></button>
-    <button class="mini" data-action="done" data-id="${esc(r.id)}" aria-pressed="${!!done}">${done ? '✓ Faite' : 'Faite ?'}</button>
+      <span class="row-main"><span class="row-name">${esc(r.name)}</span>
+      <span class="row-meta"><span class="pill">${momentLabel(r)}</span>${typePill(r)}${prepPills(r)}</span></span></button>
+    <button class="mini" data-action="double" data-id="${esc(r.id)}" aria-pressed="${dbl}" aria-label="Proportions doubles pour ${esc(r.name)}">×2</button>
     <button class="rm" data-action="pick" data-id="${esc(r.id)}" aria-label="Retirer ${esc(r.name)} de ma semaine">×</button></div>`;
 }
+function allCategories() {
+  const m = new Map();
+  [...DEFAULT_CATEGORIES, ...[...S.recipes.values()].map(r => r.category).filter(Boolean)].forEach(c => { if (!m.has(norm(c))) m.set(norm(c), c); });
+  return [...m.values()].sort((a, b) => a.localeCompare(b, 'fr'));
+}
 function filtersHtml(f) {
-  const chip = (key, label, pressed, dot) => `<button class="chip" data-filter="${key}" aria-pressed="${pressed}">${dot ? `<span class="dot d-${dot}"></span>` : ''}${label}</button>`;
-  return `<div class="filters" role="group" aria-label="Filtres">
-    ${SEASONS.map(s => chip('season:' + s.k, s.l, f.seasons.has(s.k), s.k)).join('')}
-    <span class="sep" aria-hidden="true"></span>
-    ${MOMENTS.map(m => chip('moment:' + m.k, m.l, f.moments.has(m.k))).join('')}
-    <span class="sep" aria-hidden="true"></span>
-    ${REGIMES.map(g => chip('regime:' + g.k, g.l, f.regime === g.k)).join('')}
-  </div>
+  const chip = (key, label, pressed, dot) => `<button class="chip" data-filter="${esc(key)}" aria-pressed="${pressed}">${dot ? `<span class="dot d-${dot}"></span>` : ''}${esc(label)}</button>`;
+  const cats = allCategories();
+  const catLabel = k => cats.find(c => norm(c) === k) || k;
+  const nMore = f.moments.size + f.cuissons.size + f.categories.size;
+  return `<div class="filters" role="group" aria-label="Saisons">${SEASONS.map(s => chip('season:' + s.k, s.l, f.seasons.has(s.k), s.k)).join('')}</div>
+  <div class="filters" role="group" aria-label="Type de plat">${REGIMES.map(g => chip('regime:' + g.k, g.l, f.regimes.has(g.k))).join('')}</div>
+  <details class="more"${S.moreOpen ? ' open' : ''}><summary>Plus de filtres${nMore ? ` <span class="badge-inline">${nMore}</span>` : ''}</summary>
+    <div class="filters" role="group" aria-label="Moment">${MOMENTS.map(m => chip('moment:' + m.k, m.l, f.moments.has(m.k))).join('')}</div>
+    <div class="filters" role="group" aria-label="Cuisson">${CUISSONS.map(c => chip('cuisson:' + c.k, c.l, f.cuissons.has(c.k))).join('')}</div>
+    <div class="filters" role="group" aria-label="Catégories">
+      ${[...f.categories].map(k => `<button class="chip" data-filter="cat:${esc(k)}" aria-pressed="true" aria-label="Retirer le filtre ${esc(catLabel(k))}">${esc(catLabel(k))} ✕</button>`).join('')}
+      <label class="sr" for="addcat">Ajouter une catégorie au filtre</label>
+      <select id="addcat" class="chip-select" data-addcat><option value="">+ Catégorie…</option>
+        ${cats.filter(c => !f.categories.has(norm(c))).map(c => `<option value="${esc(norm(c))}">${esc(c)}</option>`).join('')}</select>
+    </div>
+  </details>
   <div class="listhead"><span id="rcount"></span><label><span class="sr">Trier</span><select data-sort>
-    <option value="oubli"${f.sort === 'oubli' ? ' selected' : ''}>Pas faites depuis longtemps</option>
-    <option value="recent"${f.sort === 'recent' ? ' selected' : ''}>Faites récemment</option>
-    <option value="az"${f.sort === 'az' ? ' selected' : ''}>De A à Z</option></select></label></div>`;
+    <option value="oubli"${f.sort === 'oubli' ? ' selected' : ''}>Faites il y a le plus longtemps</option>
+    <option value="recent"${f.sort === 'recent' ? ' selected' : ''}>Faites le plus récemment</option>
+    <option value="az"${f.sort === 'az' ? ' selected' : ''}>De A à Z</option>
+    <option value="za"${f.sort === 'za' ? ' selected' : ''}>De Z à A</option></select></label></div>`;
 }
 
 /* ---------- shopping logic ---------- */
@@ -608,16 +675,18 @@ function fmtQty(q, unit) {
   return `${s} ${pl}`;
 }
 function shoppingList() {
-  const map = new Map();
-  week().picks.forEach(id => {
+  const w = week(), map = new Map();
+  w.picks.forEach(id => {
     const r = S.recipes.get(id); if (!r) return;
-    (r.ingredients || '').split('\n').forEach(line => {
+    const m = w.mult[id] === 2 ? 2 : 1;
+    r.ingredients.split('\n').forEach(line => {
       const p = parseLine(line); if (!p) return;
       const key = shopKey(p);
       let it = map.get(key);
-      if (!it) { it = { key, name: p.name, unit: p.unit, qty: p.qty == null ? null : 0, src: new Set() }; map.set(key, it); }
-      if (p.qty != null && it.qty != null) it.qty += p.qty;
-      it.src.add(r.name);
+      if (!it) { it = { key, name: p.name, unit: p.unit, qty: p.qty == null ? null : 0, parts: [] }; map.set(key, it); }
+      const q = p.qty == null ? null : p.qty * m;
+      if (q != null && it.qty != null) it.qty += q;
+      it.parts.push({ recipe: r.name, qty: q, mult: m });
     });
   });
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
@@ -626,6 +695,7 @@ function shoppingList() {
 /* ---------- rendering ---------- */
 function setTab(t) {
   S.tab = t;
+  if (t === 'recettes') bilanSemaines();
   try { if (location.hash.slice(1) !== t) history.replaceState(null, '', '#' + t); } catch (e) {}
   document.querySelectorAll('nav.tabs button').forEach(b => { if (b.dataset.tab === t) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   render();
@@ -652,6 +722,7 @@ function renderGate() {
   main.innerHTML = `<div class="gate"><h2>Bienvenue</h2>
     ${S.mode === 'denied'
       ? `<p class="gate-alert">Le compte ${esc(S.deniedEmail)} n’a pas accès aux recettes du foyer. Connecte-toi avec un compte autorisé.</p>`
+      : S.expired ? '<p>Ta dernière connexion date de plus de 3 mois : reconnecte-toi pour continuer.</p>'
       : '<p>Connecte-toi avec ton compte Google pour retrouver les recettes partagées du foyer.</p>'}
     <button class="btn primary" data-action="signin">Se connecter avec Google</button></div>`;
 }
@@ -666,7 +737,7 @@ function render() {
   if (S.tab === 'recettes') {
     main.innerHTML = `<label class="sr" for="q">Rechercher une recette</label>
       <input id="q" class="search" type="search" placeholder="Chercher un nom, un ingrédient, un tag…" value="${esc(S.filters.q)}" autocomplete="off">
-      ${filtersHtml(S.filters)}<div class="list" id="rlist"></div>`;
+      <div id="fbox">${filtersHtml(S.filters)}</div><div class="list" id="rlist"></div>`;
     renderRecipeList();
   } else if (S.tab === 'semaine') {
     main.innerHTML = '<div id="pool"></div>';
@@ -683,9 +754,17 @@ function refresh() {
   if (!ready()) return;
   renderNet();
   renderWeekBar();
-  if (S.tab === 'recettes') renderRecipeList();
+  if (S.tab === 'recettes') renderFilters();
   else if (S.tab === 'semaine') renderPool();
   else renderShop();
+}
+function renderFilters() {
+  const box = $('#fbox');
+  if (box) {
+    const d = box.querySelector('details.more'); if (d) S.moreOpen = d.open;
+    box.innerHTML = filtersHtml(S.filters);
+  }
+  renderRecipeList();
 }
 function renderRecipeList() {
   const el = $('#rlist'); if (!el) return;
@@ -704,28 +783,22 @@ function renderPool() {
   const w = week();
   const recs = w.picks.map(id => S.recipes.get(id)).filter(Boolean);
   if (!recs.length) {
-    const prevKey = iso(addDays(parseIso(S.weekKey), -7));
-    loadWeekOnce(prevKey);
-    const pw = S.weeks[prevKey] || null;
-    const left = pw ? pw.picks.filter(id => S.recipes.has(id) && !pw.done[id]) : [];
     el.innerHTML = `<div class="empty-state"><p>Aucune recette prévue cette semaine. Parcours tes recettes et touche + sur celles qui te tentent.</p>
-      <div class="btns center"><button class="btn primary" data-action="gotorecettes">Parcourir mes recettes</button>
-      ${left.length ? `<button class="btn" data-action="carryover">Reprendre ${plural(left.length, 'recette')} pas faite${left.length > 1 ? 's' : ''} la semaine d’avant</button>` : ''}</div></div>`;
+      <button class="btn primary" data-action="gotorecettes">Parcourir mes recettes</button></div>`;
     return;
   }
-  const done = recs.filter(r => w.done[r.id]);
-  const todo = recs.filter(r => !w.done[r.id]);
-  const nVege = recs.filter(r => regimeOf(r) === 'vege').length;
-  const nCarne = recs.filter(r => regimeOf(r) === 'carne').length;
-  const midi = recs.filter(r => r.moments && r.moments.length === 1 && r.moments[0] === 'midi').length;
-  const soir = recs.filter(r => r.moments && r.moments.length === 1 && r.moments[0] === 'soir').length;
+  const count = k => recs.filter(r => regimeOf(r) === k).length;
+  const midi = recs.filter(r => r.moments.length === 1 && r.moments[0] === 'midi').length;
+  const soir = recs.filter(r => r.moments.length === 1 && r.moments[0] === 'soir').length;
+  const veille = recs.filter(r => r.veille).length;
   el.innerHTML = `<div class="summary">
       <span class="pill">${plural(recs.length, 'recette')}</span>
-      ${nVege ? `<span class="pill pill-vege">${nVege} végé</span>` : ''}${nCarne ? `<span class="pill pill-carne">${nCarne} carné${nCarne > 1 ? 's' : ''}</span>` : ''}
+      ${REGIMES.map(g => { const n = count(g.k); return n ? `<span class="pill pill-${g.k}">${n} ${g.l.toLowerCase()}${g.k === 'vege' ? '' : (n > 1 ? 's' : '')}</span>` : ''; }).join('')}
       ${midi ? `<span class="pill">${midi} plutôt midi</span>` : ''}${soir ? `<span class="pill">${soir} plutôt soir</span>` : ''}
-      ${done.length ? `<span class="pill">${done.length} déjà faite${done.length > 1 ? 's' : ''}</span>` : ''}</div>
-    <div class="list">${todo.map(r => poolRow(r, false)).join('')}${done.map(r => poolRow(r, true)).join('')}</div>
-    <div class="btns center" style="margin-top:20px"><button class="btn" data-action="gotorecettes">Ajouter d’autres recettes</button>
+      ${veille ? `<span class="pill">${veille} à préparer la veille</span>` : ''}</div>
+    <div class="list">${recs.map(poolRow).join('')}</div>
+    <p class="kv" style="margin-top:10px">×2 : proportions doublées dans la liste de courses.</p>
+    <div class="btns center" style="margin-top:12px"><button class="btn" data-action="gotorecettes">Ajouter d’autres recettes</button>
     <button class="btn primary" data-action="gotocourses">Voir la liste de courses</button></div>`;
 }
 function renderShop() {
@@ -741,10 +814,17 @@ function renderShop() {
     html = `<div class="shop-tools"><span class="count">${done} sur ${total} dans le panier</span>
       <button class="btn" data-action="copyshop">Copier</button>${done ? '<button class="btn" data-action="uncheck">Tout décocher</button>' : ''}</div>`;
     const ordered = [...items.filter(i => !w.checked[i.key]), ...items.filter(i => w.checked[i.key])];
-    html += ordered.map((it, n) => `<div class="item${w.checked[it.key] ? ' checked' : ''}">
+    html += ordered.map((it, n) => {
+      const withQty = it.parts.filter(p => p.qty != null);
+      const calc = withQty.length > 1 ? withQty.map(p => fmtQty(p.qty, it.unit)).join(' + ') : '';
+      const open = S.openItems.has(it.key);
+      return `<div class="item${w.checked[it.key] ? ' checked' : ''}">
       <input type="checkbox" id="it${n}" data-action="tick" data-key="${esc(it.key)}"${w.checked[it.key] ? ' checked' : ''}>
       <label for="it${n}"><span class="nm">${esc(it.name)}</span><span class="qt">${esc(fmtQty(it.qty, it.unit))}</span>
-      <span class="src">${esc([...it.src].join(', '))}</span></label></div>`).join('');
+        ${calc ? `<span class="calc">= ${esc(calc)}</span>` : ''}
+        ${open ? `<span class="detail">${it.parts.map(p => `<span>${esc(p.recipe)}${p.mult === 2 ? ' (×2)' : ''}${p.qty != null ? ` : ${esc(fmtQty(p.qty, it.unit))}` : ''}</span>`).join('')}</span>` : ''}</label>
+      <button class="info" data-action="itemdetail" data-key="${esc(it.key)}" aria-expanded="${open}" aria-label="Pour quelles recettes ?">?</button></div>`;
+    }).join('');
     if (exts.length) {
       html += '<h2 class="sub">En plus</h2>' + exts.map((e, n) => `<div class="item${e.done ? ' checked' : ''}">
         <input type="checkbox" id="ex${n}" data-action="tickextra" data-id="${esc(e.id)}"${e.done ? ' checked' : ''}>
@@ -767,12 +847,12 @@ const head = title => `<div class="sheet-head"><h2>${title}</h2><button class="i
 function openRecipe(id) {
   const r = S.recipes.get(id); if (!r) return;
   sheetRecipe = id;
-  const ings = (r.ingredients || '').split('\n').map(s => s.trim()).filter(Boolean);
-  const hist = r.history || [];
+  const ings = r.ingredients.split('\n').map(s => s.trim()).filter(Boolean);
   const lm = lastMade(r), on = isPicked(id);
+  const cuis = r.cuissons.map(c => CUISSONS.find(x => x.k === c).l).join(', ');
   openSheet(`${head(esc(r.name))}<div class="sheet-body">
     <p class="row-meta" style="margin:0 0 10px">${metaHtml(r)}</p>
-    <p class="kv">Dernière fois : <strong>${lm ? `${fmtDay(parseIso(lm))} ${parseIso(lm).getFullYear()}` : 'jamais'}</strong>${hist.length > 1 ? `, faite ${hist.length} fois` : ''}</p>
+    <p class="kv">Dernière fois : <strong>${lm ? `${fmtDay(parseIso(lm))} ${parseIso(lm).getFullYear()}` : 'jamais'}</strong>${r.history.length > 1 ? `, faite ${r.history.length} fois` : ''}${cuis ? `<br>Cuisson : ${esc(cuis)}` : ''}</p>
     ${ings.length ? `<h3 class="lbl">Ingrédients</h3><ul class="ing">${ings.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : ''}
     ${r.notes ? `<h3 class="lbl">Préparation</h3><div class="steps">${esc(r.notes)}</div>` : ''}
   </div><div class="sheet-foot">
@@ -781,24 +861,34 @@ function openRecipe(id) {
 }
 function openEditor(id) {
   sheetRecipe = null;
-  const r = id ? S.recipes.get(id) : { seasons: [], moments: [] };
-  const rg = regimeOf(r);
+  const r = id ? S.recipes.get(id) : normRecipe({}, '');
+  const rg = id ? regimeOf(r) : null;
   const t = (k, l, on, name) => `<button type="button" class="chip" data-toggle="${name}" data-v="${k}" aria-pressed="${on}">${name === 'seasons' ? `<span class="dot d-${k}"></span>` : ''}${l}</button>`;
+  const cats = allCategories();
   openSheet(`${head(id ? 'Modifier la recette' : 'Nouvelle recette')}
   <form class="sheet-body" id="editForm" autocomplete="off">
-    <label class="field"><span>Nom</span><input type="text" name="name" required value="${esc(r.name || '')}" placeholder="Ex. Curry de pois chiches"></label>
-    <fieldset class="field"><legend>Saisons</legend><div class="filters" style="margin:0">${SEASONS.map(s => t(s.k, s.l, (r.seasons || []).includes(s.k), 'seasons')).join('')}</div>
-      <span class="hint">Aucune saison cochée = toute l’année.</span></fieldset>
-    <fieldset class="field"><legend>Plutôt pour</legend><div class="filters" style="margin:0">${MOMENTS.map(m => t(m.k, m.l, (r.moments || []).includes(m.k), 'moments')).join('')}</div>
-      <span class="hint">Aucun coché = midi comme soir.</span></fieldset>
-    <fieldset class="field"><legend>Régime</legend><div class="filters" style="margin:0">
+    <label class="field"><span>Nom</span><input type="text" name="name" required value="${esc(id ? r.name : '')}" placeholder="Ex. Curry de pois chiches"></label>
+    <fieldset class="field"><legend>Type</legend><div class="filters" style="margin:0">
       ${REGIMES.map(g => `<button type="button" class="chip" data-toggle="regime" data-v="${g.k}" aria-pressed="${rg === g.k}">${g.l}</button>`).join('')}</div>
       <span class="hint">Carné = avec viande ou poisson.</span></fieldset>
-    <label class="field"><span>Ingrédients</span><textarea name="ingredients" placeholder="Un ingrédient par ligne :&#10;400 g de pois chiches&#10;2 oignons&#10;1 c. à soupe de curry">${esc(r.ingredients || '')}</textarea>
+    <label class="field"><span>Catégorie</span><select name="category" class="select">
+      <option value="">Aucune</option>
+      ${cats.map(c => `<option value="${esc(c)}"${r.category && norm(r.category) === norm(c) ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+      <option value="__new">+ Nouvelle catégorie…</option></select></label>
+    <fieldset class="field"><legend>Cuisson</legend><div class="filters" style="margin:0">${CUISSONS.map(c => t(c.k, c.l, r.cuissons.includes(c.k), 'cuissons')).join('')}</div></fieldset>
+    <fieldset class="field"><legend>Préparation</legend>
+      <div class="prep-row"><label class="prep-min"><input type="number" name="prep" inputmode="numeric" min="1" max="9999" step="5" value="${r.prepMinutes || ''}" placeholder="30"><span>min</span></label>
+      <button type="button" class="chip" data-toggle="veille" data-v="1" aria-pressed="${r.veille}">À préparer la veille</button></div></fieldset>
+    <fieldset class="field"><legend>Saisons</legend><div class="filters" style="margin:0">${SEASONS.map(s => t(s.k, s.l, r.seasons.includes(s.k), 'seasons')).join('')}</div>
+      <span class="hint">Aucune saison cochée = toute l’année.</span></fieldset>
+    <fieldset class="field"><legend>Plutôt pour</legend><div class="filters" style="margin:0">${MOMENTS.map(m => t(m.k, m.l, r.moments.includes(m.k), 'moments')).join('')}</div>
+      <span class="hint">Aucun coché = midi comme soir.</span></fieldset>
+    <label class="field"><span>Ingrédients</span><textarea name="ingredients" placeholder="Un ingrédient par ligne :&#10;400 g de pois chiches&#10;2 oignons&#10;1 c. à soupe de curry">${esc(r.ingredients)}</textarea>
       <span class="hint">Une ligne par ingrédient, quantité en premier. Les quantités s’additionnent dans la liste de courses.</span></label>
-    <label class="field"><span>Préparation ou notes</span><textarea name="notes" placeholder="Étapes, astuces, lien vers la recette d’origine…">${esc(r.notes || '')}</textarea></label>
-    <label class="field"><span>Tags</span><input type="text" name="tags" value="${esc((r.tags || []).join(', '))}" placeholder="rapide, batch cooking, invités"><span class="hint">Séparés par des virgules.</span></label>
-    <label class="field"><span>Dernière fois que je l’ai faite</span><input type="date" name="last" value="${lastMade(r) || ''}" max="${todayIso()}"></label>
+    <label class="field"><span>Préparation ou notes</span><textarea name="notes" placeholder="Étapes, astuces, lien vers la recette d’origine…">${esc(r.notes)}</textarea></label>
+    <label class="field"><span>Tags</span><input type="text" name="tags" value="${esc(r.tags.join(', '))}" placeholder="rapide, batch cooking, invités"><span class="hint">Séparés par des virgules.</span></label>
+    <label class="field"><span>Dernière fois que je l’ai faite</span><input type="date" name="last" value="${lastMade(r) || ''}" max="${todayIso()}">
+      <span class="hint">Mise à jour automatiquement quand une semaine où la recette était prévue est passée.</span></label>
     ${id ? '' : `<label class="field" style="flex-direction:row;align-items:center;gap:10px"><input type="checkbox" name="addweek" style="width:20px;height:20px;accent-color:var(--accent)"><span style="font-weight:500">L’ajouter aussi à ma semaine</span></label>`}
   </form><div class="sheet-foot">
     <button class="btn primary grow" data-action="save" data-id="${esc(id || '')}">Enregistrer</button>
@@ -812,12 +902,18 @@ function submitEditor(id) {
   if (!name) { F('name').focus(); toast('Donne un nom à ta recette'); return; }
   const picked = k => [...form.querySelectorAll(`[data-toggle="${k}"][aria-pressed="true"]`)].map(b => b.dataset.v);
   const regime = picked('regime')[0];
-  if (!regime) { toast('Indique si la recette est végé ou carnée'); form.querySelector('[data-toggle="regime"]').focus(); return; }
+  if (!regime) { toast('Indique si la recette est végé, carnée ou un dessert'); form.querySelector('[data-toggle="regime"]').focus(); return; }
   const old = id ? S.recipes.get(id) : null;
   const rid = old ? old.id : newId();
   const last = F('last').value;
+  const cat = F('category').value;
+  const prep = Math.round(Number(F('prep').value));
   const patch = {
     name, regime,
+    category: cat && cat !== '__new' ? cat : null,
+    cuissons: picked('cuissons'),
+    prepMinutes: prep > 0 && prep < 10000 ? prep : null,
+    veille: picked('veille').length > 0,
     seasons: picked('seasons'),
     moments: picked('moments'),
     ingredients: F('ingredients').value.trim(),
@@ -842,7 +938,7 @@ function openData() {
     try { transferred = localStorage.getItem(LKEY_DONE); } catch (e) {}
   }
   openSheet(`${head('Mes données')}<div class="sheet-body">
-    ${fb ? `<p style="margin-top:0">Connecté avec <strong>${esc(S.user.email)}</strong>. Les recettes du foyer sont partagées et synchronisées automatiquement, et restent disponibles hors ligne.</p>`
+    ${fb ? `<p style="margin-top:0">Connecté avec <strong>${esc(S.user.email)}</strong>${S.user.since ? ` depuis le ${fmtDay(new Date(S.user.since))} ${new Date(S.user.since).getFullYear()} (connexion valable 3 mois)` : ''}. Les recettes du foyer sont partagées et synchronisées automatiquement, et restent disponibles hors ligne.</p>`
          : '<p style="margin-top:0">Firebase n’est pas configuré (fichier <code>firebase-config.js</code> absent) : tes recettes sont enregistrées sur ce téléphone seulement.</p>'}
     <p>${plural(n, 'recette')}. L’export JSON reste ta sauvegarde : fais-en un de temps en temps.</p>
     <div class="btns"><button class="btn primary" data-action="export">Exporter (JSON)</button><button class="btn" data-action="import">Importer un fichier</button></div>
@@ -905,13 +1001,13 @@ function transferLocal() {
 }
 
 const EXAMPLES = [
-  { name: 'Soupe de potimarron', seasons: ['automne', 'hiver'], moments: ['soir'], regime: 'vege', tags: ['rapide'],
+  { name: 'Soupe de potimarron', seasons: ['automne', 'hiver'], moments: ['soir'], regime: 'vege', category: 'Soupe', cuissons: ['casserole'], prepMinutes: 40, tags: ['rapide'],
     ingredients: '1 potimarron\n2 oignons\n50 cl de bouillon de légumes\n10 cl de crème\n1 pincée de muscade', notes: 'Couper le potimarron sans l’éplucher, faire revenir avec les oignons, couvrir de bouillon, cuire 25 min, mixer avec la crème.' },
-  { name: 'Salade de lentilles et feta', seasons: ['printemps', 'ete'], moments: ['midi'], regime: 'vege', tags: ['à emporter'],
+  { name: 'Salade de lentilles et feta', seasons: ['printemps', 'ete'], moments: ['midi'], regime: 'vege', category: 'Salade', cuissons: ['cru', 'casserole'], prepMinutes: 30, veille: true, tags: ['à emporter'],
     ingredients: '200 g de lentilles vertes\n100 g de feta\n1 oignon rouge\n1 botte de persil\n2 c. à soupe d’huile d’olive', notes: 'Cuire les lentilles 20 min, laisser tiédir, mélanger avec le reste.' },
-  { name: 'Gratin dauphinois', seasons: ['automne', 'hiver'], moments: ['soir'], regime: 'vege', tags: ['four'],
+  { name: 'Gratin dauphinois', seasons: ['automne', 'hiver'], moments: ['soir'], regime: 'vege', category: 'Gratin', cuissons: ['four'], prepMinutes: 90, tags: ['four'],
     ingredients: '1 kg de pommes de terre\n50 cl de lait\n20 cl de crème\n1 gousse d’ail', notes: 'Trancher finement, cuire dans le lait 10 min, verser en plat avec la crème, 1 h à 160 °C.' },
-  { name: 'Poulet rôti au citron', seasons: [], moments: [], regime: 'carne', tags: ['dimanche'],
+  { name: 'Poulet rôti au citron', seasons: [], moments: [], regime: 'carne', category: 'Rôti', cuissons: ['four'], prepMinutes: 90, tags: ['dimanche'],
     ingredients: '1 poulet\n2 citrons\n4 gousses d’ail\n500 g de pommes de terre', notes: 'Citron et ail dans le poulet, 1 h 15 à 200 °C avec les pommes de terre autour.' }
 ];
 function loadExamples() {
@@ -930,13 +1026,38 @@ let toastT;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2800); }
 
 function togglePick(id) {
-  if (isPicked(id)) patchWeek({ picks: removeVals(id), done: { [id]: DEL } });
+  if (isPicked(id)) patchWeek({ picks: removeVals(id), done: { [id]: DEL }, mult: { [id]: DEL } });
   else patchWeek({ picks: union(id) });
 }
-function toggleDone(id) {
-  const w = week(); if (!S.recipes.has(id)) return;
-  if (w.done[id]) { const d = w.done[id]; patchWeek({ done: { [id]: DEL } }); patchRecipe(id, { history: removeVals(d) }); }
-  else { const d = todayIso(); patchWeek({ done: { [id]: d } }); patchRecipe(id, { history: union(d) }); }
+/* Semaines passées : chaque recette prévue une semaine terminée compte comme faite cette semaine-là
+   (date du lundi). On mémorise sur l’appareil la dernière semaine traitée pour ne pas tout refaire. */
+const BKEY = 'mes-recettes:bilan';
+let bilanRunning = false;
+async function bilanSemaines() {
+  if (!ready() || bilanRunning || !S.recipes.size) return;
+  const lastWeek = iso(addDays(parseIso(thisWeekKey()), -7));
+  let since = '';
+  try { since = localStorage.getItem(BKEY) || ''; } catch (e) {}
+  if (since >= lastWeek) return;
+  bilanRunning = true;
+  try {
+    let weeks, complete = true;
+    if (S.mode === 'firebase') {
+      const snap = await FB.fs.getDocs(FB.fs.collection(FB.db, 'semaines'));
+      complete = !(snap.metadata && snap.metadata.fromCache);
+      weeks = snap.docs.map(d => [d.id, normWeek(d.data(), d.id)]);
+    } else weeks = Object.entries(S.weeks);
+    const touched = new Set();
+    weeks.filter(([k]) => /^\d{4}-\d{2}-\d{2}$/.test(k) && k > since && k <= lastWeek).forEach(([k, w]) => {
+      w.picks.forEach(id => {
+        const r = S.recipes.get(id);
+        if (r && !r.history.includes(k)) { patchRecipe(id, { history: union(k) }); touched.add(id); }
+      });
+    });
+    if (complete) try { localStorage.setItem(BKEY, lastWeek); } catch (e) {}
+    if (touched.size) toast(`Dates de dernière réalisation mises à jour (${plural(touched.size, 'recette')})`);
+  } catch (e) { console.warn('Bilan des semaines passées impossible', e); }
+  finally { bilanRunning = false; }
 }
 
 document.addEventListener('click', e => {
@@ -944,16 +1065,10 @@ document.addEventListener('click', e => {
   if (tabBtn) { setTab(tabBtn.dataset.tab); return; }
   const chip = e.target.closest('[data-filter]');
   if (chip) {
-    const f = S.filters, [k, v] = chip.dataset.filter.split(':');
-    if (k === 'season') f.seasons.has(v) ? f.seasons.delete(v) : f.seasons.add(v);
-    if (k === 'moment') f.moments.has(v) ? f.moments.delete(v) : f.moments.add(v);
-    if (k === 'regime') f.regime = f.regime === v ? null : v;
-    chip.parentElement.querySelectorAll('[data-filter]').forEach(c => {
-      const [ck, cv] = c.dataset.filter.split(':');
-      const on = ck === 'season' ? f.seasons.has(cv) : ck === 'moment' ? f.moments.has(cv) : f.regime === cv;
-      c.setAttribute('aria-pressed', on);
-    });
-    renderRecipeList();
+    const f = S.filters, raw = chip.dataset.filter, k = raw.slice(0, raw.indexOf(':')), v = raw.slice(raw.indexOf(':') + 1);
+    const set = { season: f.seasons, moment: f.moments, regime: f.regimes, cuisson: f.cuissons, cat: f.categories }[k];
+    if (set) set.has(v) ? set.delete(v) : set.add(v);
+    renderFilters();
     return;
   }
   const tog = e.target.closest('[data-toggle]');
@@ -979,7 +1094,7 @@ document.addEventListener('click', e => {
     case 'examples': loadExamples(); break;
     case 'gotorecettes': setTab('recettes'); break;
     case 'gotocourses': setTab('courses'); break;
-    case 'clearfilters': Object.assign(S.filters, { q: '', seasons: new Set(), moments: new Set(), regime: null }); render(); break;
+    case 'clearfilters': Object.assign(S.filters, { q: '', seasons: new Set(), moments: new Set(), regimes: new Set(), cuissons: new Set(), categories: new Set() }); render(); break;
     case 'open': openRecipe(id); break;
     case 'edit': openEditor(id); break;
     case 'save': submitEditor(id || null); break;
@@ -994,12 +1109,11 @@ document.addEventListener('click', e => {
       if (!was && S.tab === 'recettes') toast(`Ajoutée, ${plural(week().picks.length, 'recette')} cette semaine`);
       break;
     }
-    case 'done': toggleDone(id); break;
-    case 'carryover': {
-      const pw = S.weeks[iso(addDays(parseIso(S.weekKey), -7))];
-      const ids = pw ? pw.picks.filter(x => S.recipes.has(x) && !pw.done[x] && !w.picks.includes(x)) : [];
-      if (ids.length) patchWeek({ picks: union(...ids) });
-      break;
+    case 'double': patchWeek({ mult: { [id]: w.mult[id] === 2 ? DEL : 2 } }); break;
+    case 'itemdetail': {
+      const k = a.dataset.key;
+      S.openItems.has(k) ? S.openItems.delete(k) : S.openItems.add(k);
+      renderShop(); break;
     }
     case 'prevweek': case 'nextweek': case 'thisweek':
       S.weekKey = action === 'thisweek' ? thisWeekKey() : iso(addDays(parseIso(S.weekKey), action === 'prevweek' ? -7 : 7));
@@ -1023,8 +1137,19 @@ document.addEventListener('change', e => {
   if (t.dataset.action === 'tick') patchWeek({ checked: { [t.dataset.key]: t.checked ? true : DEL } });
   if (t.dataset.action === 'tickextra') patchWeek({ extras: { [t.dataset.id]: { done: t.checked } } });
   if (t.hasAttribute('data-sort')) { S.filters.sort = t.value; renderRecipeList(); }
+  if (t.hasAttribute('data-addcat') && t.value) { S.filters.categories.add(t.value); renderFilters(); }
+  if (t.name === 'category' && t.value === '__new') {
+    const name = (prompt('Nom de la nouvelle catégorie') || '').trim().replace(/\s+/g, ' ');
+    if (!name) { t.value = ''; return; }
+    const existing = [...t.options].find(o => o.value !== '__new' && norm(o.value) === norm(name));
+    if (existing) { t.value = existing.value; return; }
+    const label = name.charAt(0).toUpperCase() + name.slice(1);
+    const opt = new Option(label, label);
+    t.add(opt, t.options[t.options.length - 1]); t.value = label;
+  }
   if (t.id === 'importFile' && t.files[0]) { doImport(t.files[0]); t.value = ''; }
 });
+document.addEventListener('toggle', e => { if (e.target.matches && e.target.matches('details.more')) S.moreOpen = e.target.open; }, true);
 document.addEventListener('input', e => {
   if (e.target.id === 'q') { S.filters.q = e.target.value; renderRecipeList(); }
 });
