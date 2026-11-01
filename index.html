@@ -159,7 +159,7 @@ dialog.sheet::backdrop{background:rgba(10,16,13,.45)}
 .sheet-foot{padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap}
 .sheet-foot .grow{flex:1}
 .field{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
-.field > span,.field legend{font-weight:600;font-size:.9rem}
+.field > span,.field > label,.field legend{font-weight:600;font-size:.9rem}
 fieldset.field{border:0;padding:0;margin:0 0 16px}
 .field input[type=text],.field input[type=date],.field textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg)}
 .field textarea{min-height:120px;resize:vertical;line-height:1.5}
@@ -392,6 +392,9 @@ function loadWeekOnce(key) {
     .catch(() => {});
 }
 
+/* ---------- Firebase : connexion et synchronisation ---------- */
+/* PEER REVIEW REQUIRED — relecture requise : chargement de Firebase, connexion Google,
+   gestion des accès refusés et déconnexion (fonctions initFirebase à signOutNow). */
 async function initFirebase(cfg) {
   try {
     const [appM, authM, fs] = await Promise.all([
@@ -431,7 +434,7 @@ async function initFirebase(cfg) {
 }
 /* Une connexion Google réussie reste valable SESSION_MAX_DAYS jours, puis on redemande de se connecter.
    La date vient de Firebase (dernière connexion interactive), pas du téléphone. */
-const SESSION_MAX_DAYS = 120;
+const SESSION_MAX_DAYS = 90;
 function sessionTooOld(user) {
   const t = Date.parse(user && user.metadata && user.metadata.lastSignInTime);
   return Number.isFinite(t) && Date.now() - t > SESSION_MAX_DAYS * 864e5;
@@ -497,6 +500,7 @@ function authError(e) {
   toast(msg || `Connexion impossible (${e.code})`);
 }
 function signOutNow() { closeSheet(); FB.authM.signOut(FB.auth).catch(authError); }
+/* ---------- fin de la partie à relire ---------- */
 
 async function init() {
   const h = location.hash.slice(1);
@@ -620,11 +624,7 @@ function filtersHtml(f) {
         ${cats.filter(c => !f.categories.has(norm(c))).map(c => `<option value="${esc(norm(c))}">${esc(c)}</option>`).join('')}</select>
     </div>
   </details>
-  <div class="listhead"><span id="rcount"></span><label><span class="sr">Trier</span><select data-sort>
-    <option value="oubli"${f.sort === 'oubli' ? ' selected' : ''}>Faites il y a le plus longtemps</option>
-    <option value="recent"${f.sort === 'recent' ? ' selected' : ''}>Faites le plus récemment</option>
-    <option value="az"${f.sort === 'az' ? ' selected' : ''}>De A à Z</option>
-    <option value="za"${f.sort === 'za' ? ' selected' : ''}>De Z à A</option></select></label></div>`;
+`;
 }
 
 /* ---------- shopping logic ---------- */
@@ -737,7 +737,12 @@ function render() {
   if (S.tab === 'recettes') {
     main.innerHTML = `<label class="sr" for="q">Rechercher une recette</label>
       <input id="q" class="search" type="search" placeholder="Chercher un nom, un ingrédient, un tag…" value="${esc(S.filters.q)}" autocomplete="off">
-      <div id="fbox">${filtersHtml(S.filters)}</div><div class="list" id="rlist"></div>`;
+      <div id="fbox">${filtersHtml(S.filters)}</div>
+      <div class="listhead"><span id="rcount"></span><label class="sr" for="sort">Trier</label><select id="sort" data-sort>
+    <option value="oubli"${S.filters.sort === 'oubli' ? ' selected' : ''}>Faites il y a le plus longtemps</option>
+    <option value="recent"${S.filters.sort === 'recent' ? ' selected' : ''}>Faites le plus récemment</option>
+    <option value="az"${S.filters.sort === 'az' ? ' selected' : ''}>De A à Z</option>
+    <option value="za"${S.filters.sort === 'za' ? ' selected' : ''}>De Z à A</option></select></div><div class="list" id="rlist"></div>`;
     renderRecipeList();
   } else if (S.tab === 'semaine') {
     main.innerHTML = '<div id="pool"></div>';
@@ -754,13 +759,13 @@ function refresh() {
   if (!ready()) return;
   renderNet();
   renderWeekBar();
-  if (S.tab === 'recettes') renderFilters();
+  if (S.tab === 'recettes') renderFilters(false);
   else if (S.tab === 'semaine') renderPool();
   else renderShop();
 }
-function renderFilters() {
+function renderFilters(force = true) {
   const box = $('#fbox');
-  if (box) {
+  if (box && (force || !box.contains(document.activeElement))) {
     const d = box.querySelector('details.more'); if (d) S.moreOpen = d.open;
     box.innerHTML = filtersHtml(S.filters);
   }
@@ -871,10 +876,10 @@ function openEditor(id) {
     <fieldset class="field"><legend>Type</legend><div class="filters" style="margin:0">
       ${REGIMES.map(g => `<button type="button" class="chip" data-toggle="regime" data-v="${g.k}" aria-pressed="${rg === g.k}">${g.l}</button>`).join('')}</div>
       <span class="hint">Carné = avec viande ou poisson.</span></fieldset>
-    <label class="field"><span>Catégorie</span><select name="category" class="select">
+    <div class="field"><label for="f-category">Catégorie</label><select id="f-category" name="category" class="select">
       <option value="">Aucune</option>
       ${cats.map(c => `<option value="${esc(c)}"${r.category && norm(r.category) === norm(c) ? ' selected' : ''}>${esc(c)}</option>`).join('')}
-      <option value="__new">+ Nouvelle catégorie…</option></select></label>
+      <option value="__new">+ Nouvelle catégorie…</option></select></div>
     <fieldset class="field"><legend>Cuisson</legend><div class="filters" style="margin:0">${CUISSONS.map(c => t(c.k, c.l, r.cuissons.includes(c.k), 'cuissons')).join('')}</div></fieldset>
     <fieldset class="field"><legend>Préparation</legend>
       <div class="prep-row"><label class="prep-min"><input type="number" name="prep" inputmode="numeric" min="1" max="9999" step="5" value="${r.prepMinutes || ''}" placeholder="30"><span>min</span></label>
